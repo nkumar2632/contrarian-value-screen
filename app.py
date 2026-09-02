@@ -23,7 +23,7 @@ st.set_page_config(
 @st.cache_data(ttl=1800)
 def get_frozen_candidates():
     """
-    Discover and freeze the candidate list.
+    Discover, eligibility-screen, and freeze the candidate list.
 
     Cached for 30 minutes so routine Streamlit reruns
     do not silently change the frozen list.
@@ -47,19 +47,28 @@ def retrieve_price(ticker):
 def format_money(value):
     if value is None:
         return "N/A"
+
     return f"${value:,.2f}"
+
+
+def format_market_cap(value):
+    if value is None:
+        return "N/A"
+
+    if value >= 1_000_000_000:
+        return f"${value / 1_000_000_000:.1f}B"
+
+    if value >= 1_000_000:
+        return f"${value / 1_000_000:.1f}M"
+
+    return f"${value:,.0f}"
 
 
 def format_percent(value):
     if value is None:
         return "N/A"
+
     return f"{value:.1%}"
-
-
-def format_ratio(value):
-    if value is None:
-        return "N/A"
-    return f"{value:.2f}×"
 
 
 def format_datetime(value):
@@ -69,6 +78,16 @@ def format_datetime(value):
     return value.strftime(
         "%Y-%m-%d %H:%M:%S UTC"
     )
+
+
+def format_profitability(value):
+    if value is True:
+        return "Positive"
+
+    if value is False:
+        return "Negative"
+
+    return "Not applicable"
 
 
 # ============================================================
@@ -129,13 +148,14 @@ st.title(
 )
 
 st.caption(
-    "v6.3.1 — live candidate discovery"
+    "v6.3.1 — live candidate discovery + eligibility"
 )
 
 st.warning(
-    "DISCOVERY STAGE ONLY: the candidate list below is "
-    "generated from current market dislocation signals. "
-    "No candidate has passed any investment gate yet."
+    "DISCOVERY STAGE ONLY: candidates below were generated "
+    "from current market-dislocation signals and passed the "
+    "basic discovery-universe eligibility screen. No candidate "
+    "has passed an investment gate yet."
 )
 
 
@@ -144,7 +164,8 @@ st.warning(
 # ============================================================
 
 with st.spinner(
-    "Scanning current large-cap market dislocations..."
+    "Scanning current large-cap market dislocations "
+    "and checking eligibility..."
 ):
 
     candidates = get_frozen_candidates()
@@ -193,7 +214,10 @@ if st.button(
 
 st.info(
     "Current discovery universe: S&P 500 constituents plus "
-    "major unleveraged U.S.-listed ETFs. This is a reproducible "
+    "major unleveraged U.S.-listed ETFs. Stock candidates "
+    "must also satisfy the approximately $10B market-cap and "
+    "profitability eligibility requirements before the final "
+    "candidate list is frozen. This is a reproducible "
     "large-cap universe and is not represented as a full "
     "U.S.-market screen."
 )
@@ -212,15 +236,16 @@ st.header(
 if not candidates:
 
     st.error(
-        "No candidates were discovered from the current "
-        "market-dislocation rules."
+        "No eligible candidates were discovered from the "
+        "current market-dislocation rules."
     )
 
 else:
 
     st.caption(
-        "This list is frozen before gating. No replacement "
-        "candidates will be added after failures."
+        "This list is frozen before investment gating. "
+        "No replacement candidates will be added after "
+        "Gate 1 begins."
     )
 
     for rank, candidate in enumerate(
@@ -244,9 +269,9 @@ else:
                 candidate.entry_reason
             )
 
-            # ----------------------------------------
+            # --------------------------------------------
             # LIVE PRICE
-            # ----------------------------------------
+            # --------------------------------------------
 
             price_result = retrieve_price(
                 candidate.ticker
@@ -280,9 +305,9 @@ else:
                     f"{format_datetime(price_result.market_time)}"
                 )
 
-            # ----------------------------------------
+            # --------------------------------------------
             # DISCOVERY METRICS
-            # ----------------------------------------
+            # --------------------------------------------
 
             col1, col2 = st.columns(2)
 
@@ -314,6 +339,40 @@ else:
                 ),
             )
 
+            # --------------------------------------------
+            # ELIGIBILITY
+            # --------------------------------------------
+
+            st.success(
+                "✓ ELIGIBLE FOR FROZEN CANDIDATE LIST"
+            )
+
+            eligibility_col1, eligibility_col2 = (
+                st.columns(2)
+            )
+
+            eligibility_col1.metric(
+                "Market Cap",
+                format_market_cap(
+                    candidate.market_cap
+                ),
+            )
+
+            eligibility_col2.metric(
+                "Profitability",
+                format_profitability(
+                    candidate.profitable
+                ),
+            )
+
+            st.caption(
+                candidate.eligibility_reason
+            )
+
+            # --------------------------------------------
+            # DETAILS
+            # --------------------------------------------
+
             with st.expander(
                 f"Why {candidate.ticker} entered"
             ):
@@ -335,6 +394,37 @@ else:
                     st.write(
                         "No individual threshold signal recorded."
                     )
+
+                st.markdown(
+                    "### Eligibility"
+                )
+
+                st.write(
+                    "**Status:** "
+                    f"{candidate.eligibility_status}"
+                )
+
+                st.write(
+                    "**Market capitalization:** "
+                    f"{format_market_cap(candidate.market_cap)}"
+                )
+
+                st.write(
+                    "**Profitability:** "
+                    f"{format_profitability(candidate.profitable)}"
+                )
+
+                st.write(
+                    "**Eligibility rationale:** "
+                    f"{candidate.eligibility_reason}"
+                )
+
+                st.caption(
+                    "Eligibility determines whether a security "
+                    "may enter the frozen candidate list. It is "
+                    "not an investment gate and does not establish "
+                    "that the security is undervalued."
+                )
 
                 st.markdown(
                     "### Discovery Metadata"
@@ -373,8 +463,9 @@ st.header(
 )
 
 st.write(
-    "Not evaluated yet. Data-retrieval protocol will begin "
-    "with Gate 1 research."
+    "No investment-gate data-insufficiency determination "
+    "has been made yet. The formal retrieval protocol begins "
+    "with Gate 1."
 )
 
 
@@ -460,6 +551,6 @@ st.write(
 st.divider()
 
 st.caption(
-    "Development build — live discovery layer active; "
-    "investment gates not yet connected."
+    "Development build — live discovery and eligibility "
+    "layers active; investment gates not yet connected."
 )
