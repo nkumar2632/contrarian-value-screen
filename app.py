@@ -1,6 +1,12 @@
 import streamlit as st
 
-from candidate_discovery import discover_candidates
+from candidate_discovery import (
+    discover_candidates,
+    get_yahoo_history,
+    calculate_metrics,
+    build_signals,
+    calculate_discovery_score,
+)
 from data_sources import get_yahoo_price
 
 
@@ -21,15 +27,12 @@ st.set_page_config(
 # ============================================================
 
 @st.cache_data(ttl=1800)
-def get_discovery_result_v2():
+def get_discovery_result_v3():
     """
     Discover, eligibility-screen, audit, and freeze candidates.
 
-    Cached for 30 minutes so routine Streamlit reruns
-    do not silently change the frozen list.
-
-    v2 is intentionally used to invalidate older cached
-    candidate objects after the discovery schema changed.
+    v3 intentionally creates a new Streamlit cache namespace
+    while we diagnose the discovery pipeline.
     """
 
     return discover_candidates(
@@ -41,6 +44,42 @@ def get_discovery_result_v2():
 def retrieve_price(ticker):
     return get_yahoo_price(
         ticker
+    )
+
+
+@st.cache_data(ttl=300)
+def debug_ticker(ticker):
+    """
+    Retrieve one ticker independently through the exact
+    discovery-history path and calculate its discovery metrics.
+    """
+
+    history = get_yahoo_history(
+        ticker
+    )
+
+    metrics = calculate_metrics(
+        history
+    )
+
+    signals = []
+
+    score = None
+
+    if metrics is not None:
+        signals = build_signals(
+            metrics
+        )
+
+        score = calculate_discovery_score(
+            metrics
+        )
+
+    return (
+        history,
+        metrics,
+        signals,
+        score,
     )
 
 
@@ -177,20 +216,220 @@ st.title(
 )
 
 st.caption(
-    "v6.3.1 — live discovery + eligibility audit"
+    "v6.3.1 — discovery pipeline diagnostic"
 )
 
 st.warning(
-    "DISCOVERY STAGE ONLY: candidates below were generated "
-    "from current market-dislocation signals and passed the "
-    "basic discovery-universe eligibility screen. No candidate "
-    "has passed an investment gate yet."
+    "DEVELOPMENT DIAGNOSTIC: investment gates remain disabled. "
+    "The temporary TTD diagnostic below tests the exact market-"
+    "history path used by candidate discovery."
+)
+
+
+# ============================================================
+# TEMPORARY TTD DIAGNOSTIC
+# ============================================================
+
+st.divider()
+
+st.header(
+    "TEMP DEBUG — TTD"
+)
+
+with st.spinner(
+    "Testing TTD through the discovery data path..."
+):
+
+    (
+        ttd_history,
+        ttd_metrics,
+        ttd_signals,
+        ttd_score,
+    ) = debug_ticker(
+        "TTD"
+    )
+
+
+if ttd_history.error:
+
+    st.error(
+        "TTD history retrieval failed."
+    )
+
+    st.write(
+        "**Error:** "
+        f"{ttd_history.error}"
+    )
+
+else:
+
+    st.success(
+        "TTD history retrieval succeeded."
+    )
+
+
+debug_col1, debug_col2 = st.columns(
+    2
+)
+
+debug_col1.metric(
+    "Usable Closes",
+    len(
+        ttd_history.close
+    ),
+)
+
+debug_col2.metric(
+    "Discovery Score",
+    (
+        f"{ttd_score:.2f}"
+        if ttd_score is not None
+        else "N/A"
+    ),
+)
+
+
+if ttd_history.close:
+
+    price_col1, price_col2 = st.columns(
+        2
+    )
+
+    price_col1.metric(
+        "Latest Close",
+        format_money(
+            ttd_history.close[-1]
+        ),
+    )
+
+    price_col2.metric(
+        "Highest Close",
+        format_money(
+            max(
+                ttd_history.close
+            )
+        ),
+    )
+
+    st.metric(
+        "Lowest Close",
+        format_money(
+            min(
+                ttd_history.close
+            )
+        ),
+    )
+
+
+if ttd_metrics is None:
+
+    st.error(
+        "TTD history was retrieved, but discovery metrics "
+        "could not be calculated."
+    )
+
+else:
+
+    st.subheader(
+        "TTD Calculated Metrics"
+    )
+
+    metric_col1, metric_col2 = st.columns(
+        2
+    )
+
+    metric_col1.metric(
+        "1 Month",
+        format_percent(
+            ttd_metrics.get(
+                "return_1m"
+            )
+        ),
+    )
+
+    metric_col2.metric(
+        "3 Months",
+        format_percent(
+            ttd_metrics.get(
+                "return_3m"
+            )
+        ),
+    )
+
+    metric_col1.metric(
+        "6 Months",
+        format_percent(
+            ttd_metrics.get(
+                "return_6m"
+            )
+        ),
+    )
+
+    metric_col2.metric(
+        "From 52W High",
+        format_percent(
+            ttd_metrics.get(
+                "drawdown_from_52w_high"
+            )
+        ),
+    )
+
+    st.write(
+        "**Distance from 52-week low:** "
+        f"{format_percent(ttd_metrics.get('distance_from_52w_low'))}"
+    )
+
+    st.write(
+        "**Volume ratio:** "
+        + (
+            f"{ttd_metrics.get('volume_ratio'):.2f}×"
+            if ttd_metrics.get(
+                "volume_ratio"
+            ) is not None
+            else "N/A"
+        )
+    )
+
+
+st.subheader(
+    "TTD Discovery Signals"
+)
+
+if ttd_signals:
+
+    for signal in ttd_signals:
+
+        st.write(
+            f"• {signal}"
+        )
+
+else:
+
+    st.warning(
+        "TTD generated no discovery signals."
+    )
+
+
+st.caption(
+    "History source: "
+    f"{ttd_history.source}"
+)
+
+st.caption(
+    "History retrieved: "
+    f"{format_datetime(ttd_history.retrieved_at)}"
 )
 
 
 # ============================================================
 # DISCOVER / AUDIT / FREEZE
 # ============================================================
+
+st.divider()
+
+st.header(
+    "Full Discovery Run"
+)
 
 with st.spinner(
     "Scanning market dislocations and checking eligibility..."
@@ -199,29 +438,107 @@ with st.spinner(
     (
         candidates,
         eligibility_audit,
-    ) = get_discovery_result_v2()
+    ) = get_discovery_result_v3()
 
 
 # ============================================================
 # SUMMARY
 # ============================================================
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3 = st.columns(
+    3
+)
 
 col1.metric(
     "Frozen",
-    len(candidates),
+    len(
+        candidates
+    ),
 )
 
 col2.metric(
     "Eligibility Checked",
-    len(eligibility_audit),
+    len(
+        eligibility_audit
+    ),
 )
 
 col3.metric(
     "Gated",
     0,
 )
+
+
+# ============================================================
+# TTD AUDIT CHECK
+# ============================================================
+
+ttd_audit_matches = [
+    item
+    for item in eligibility_audit
+    if item.ticker == "TTD"
+]
+
+
+st.subheader(
+    "TTD Full-Pool Check"
+)
+
+if ttd_audit_matches:
+
+    ttd_audit = ttd_audit_matches[0]
+
+    st.success(
+        "TTD IS present in the ranked discovery pool."
+    )
+
+    st.write(
+        "**Discovery rank:** "
+        f"#{ttd_audit.discovery_rank}"
+    )
+
+    st.write(
+        "**Discovery score:** "
+        f"{ttd_audit.discovery_score:.2f}"
+    )
+
+    st.write(
+        "**Eligibility status:** "
+        f"{ttd_audit.eligibility_status}"
+    )
+
+    st.write(
+        "**Eligible:** "
+        f"{ttd_audit.eligible}"
+    )
+
+    st.write(
+        "**Market cap:** "
+        f"{format_market_cap(ttd_audit.market_cap)}"
+    )
+
+    st.write(
+        "**Profitability:** "
+        f"{format_profitability(ttd_audit.profitable)}"
+    )
+
+    st.write(
+        "**Eligibility reason:** "
+        f"{ttd_audit.eligibility_reason}"
+    )
+
+else:
+
+    st.error(
+        "TTD IS NOT present in the ranked discovery pool."
+    )
+
+    st.write(
+        "If the TTD diagnostic above shows qualifying "
+        "dislocation signals but this check says TTD is absent, "
+        "the bug is between metric calculation and construction "
+        "of the complete ranked discovery pool."
+    )
 
 
 # ============================================================
@@ -233,8 +550,9 @@ if st.button(
     use_container_width=True,
 ):
 
-    get_discovery_result_v2.clear()
+    get_discovery_result_v3.clear()
     retrieve_price.clear()
+    debug_ticker.clear()
 
     st.rerun()
 
@@ -264,10 +582,9 @@ st.header(
 )
 
 st.caption(
-    "Candidates are shown in original dislocation-score order. "
-    "Every security in the ranked discovery pool is audited, "
-    "including names examined after the 12-name frozen list "
-    "has already been filled."
+    "Every security in the qualifying ranked discovery pool "
+    "is shown here, including names evaluated after the "
+    "12-name frozen list was filled."
 )
 
 
@@ -277,11 +594,6 @@ accepted_count = sum(
     if item.eligible
 )
 
-not_included_count = (
-    len(eligibility_audit)
-    - len(candidates)
-)
-
 
 audit_col1, audit_col2, audit_col3 = (
     st.columns(3)
@@ -289,7 +601,9 @@ audit_col1, audit_col2, audit_col3 = (
 
 audit_col1.metric(
     "Examined",
-    len(eligibility_audit),
+    len(
+        eligibility_audit
+    ),
 )
 
 audit_col2.metric(
@@ -298,9 +612,17 @@ audit_col2.metric(
 )
 
 audit_col3.metric(
-    "Not Frozen",
-    not_included_count,
+    "Frozen",
+    len(
+        candidates
+    ),
 )
+
+
+frozen_tickers = {
+    candidate.ticker
+    for candidate in candidates
+}
 
 
 with st.expander(
@@ -318,23 +640,21 @@ with st.expander(
             item.company
         )
 
-        if item.eligible:
+        if (
+            item.eligible
+            and item.ticker in frozen_tickers
+        ):
 
-            if any(
-                candidate.ticker == item.ticker
-                for candidate in candidates
-            ):
+            st.success(
+                "ELIGIBLE — included in frozen list"
+            )
 
-                st.success(
-                    "ELIGIBLE — included in frozen list"
-                )
+        elif item.eligible:
 
-            else:
-
-                st.info(
-                    "ELIGIBLE — not frozen because the "
-                    "12-name list was already full"
-                )
+            st.info(
+                "ELIGIBLE — not frozen because the "
+                "12-name list was already full"
+            )
 
         elif (
             item.eligibility_status
@@ -351,18 +671,18 @@ with st.expander(
                 "INELIGIBLE — not included"
             )
 
-        audit_metric_1, audit_metric_2 = (
+        audit_col1, audit_col2 = (
             st.columns(2)
         )
 
-        audit_metric_1.metric(
+        audit_col1.metric(
             "Market Cap",
             format_market_cap(
                 item.market_cap
             ),
         )
 
-        audit_metric_2.metric(
+        audit_col2.metric(
             "Profitability",
             format_profitability(
                 item.profitable
@@ -428,9 +748,9 @@ if not candidates:
 else:
 
     st.caption(
-        "The following list is frozen before investment "
-        "gating. No replacement candidates will be added "
-        "after Gate 1 begins."
+        "This list is frozen before investment gating. "
+        "No replacement candidates will be added after "
+        "Gate 1 begins."
     )
 
     for rank, candidate in enumerate(
@@ -494,30 +814,32 @@ else:
             # DISCOVERY METRICS
             # --------------------------------------------
 
-            col1, col2 = st.columns(2)
+            metric_col1, metric_col2 = (
+                st.columns(2)
+            )
 
-            col1.metric(
+            metric_col1.metric(
                 "1 Month",
                 format_percent(
                     candidate.return_1m
                 ),
             )
 
-            col2.metric(
+            metric_col2.metric(
                 "3 Months",
                 format_percent(
                     candidate.return_3m
                 ),
             )
 
-            col1.metric(
+            metric_col1.metric(
                 "6 Months",
                 format_percent(
                     candidate.return_6m
                 ),
             )
 
-            col2.metric(
+            metric_col2.metric(
                 "From 52W High",
                 format_percent(
                     candidate.drawdown_from_52w_high
@@ -604,12 +926,6 @@ else:
                     f"{candidate.eligibility_reason}"
                 )
 
-                st.caption(
-                    "Eligibility determines whether a security "
-                    "may enter the frozen candidate list. It "
-                    "does not establish undervaluation."
-                )
-
                 st.markdown(
                     "### Discovery Metadata"
                 )
@@ -630,9 +946,9 @@ else:
                 )
 
                 st.caption(
-                    "Discovery score ranks market dislocation "
-                    "only. It is not a valuation score and "
-                    "cannot pass Gate 1."
+                    "Discovery score measures market dislocation "
+                    "only. It is not a valuation score and cannot "
+                    "pass Gate 1."
                 )
 
 
@@ -648,8 +964,8 @@ st.header(
 
 st.write(
     "Eligibility data insufficiency is shown in the audit "
-    "above. Formal investment-gate data insufficiency will "
-    "begin with Gate 1."
+    "above. Formal investment-gate data insufficiency begins "
+    "with Gate 1."
 )
 
 
@@ -736,7 +1052,6 @@ st.write(
 st.divider()
 
 st.caption(
-    "Development build — live discovery and audited "
-    "eligibility layers active; investment gates not yet "
-    "connected."
+    "Development build — temporary TTD discovery diagnostic "
+    "active; investment gates not yet connected."
 )
