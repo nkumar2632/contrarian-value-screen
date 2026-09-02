@@ -45,6 +45,32 @@ class DiscoveredCandidate:
 
 
 # ============================================================
+# ELIGIBILITY AUDIT RESULT
+# ============================================================
+
+@dataclass
+class EligibilityAuditItem:
+    discovery_rank: int
+    ticker: str
+    company: str
+
+    discovery_score: Optional[float]
+    entry_reason: str
+
+    eligibility_status: str
+    eligible: bool
+    eligibility_reason: str
+
+    security_type: str
+    market_cap: Optional[float]
+    profitable: Optional[bool]
+    net_income: Optional[float]
+
+    eligibility_source: str
+    eligibility_retrieved_at: datetime
+
+
+# ============================================================
 # MAJOR UNLEVERAGED ETF UNIVERSE
 # ============================================================
 
@@ -76,7 +102,7 @@ def get_sp500_universe():
     Retrieve the current S&P 500 constituent list.
 
     requests retrieves the page.
-    pandas only parses the already-downloaded HTML.
+    pandas parses the already-downloaded HTML.
     """
 
     url = (
@@ -210,7 +236,6 @@ def download_history(tickers):
 def safe_float(value):
 
     try:
-
         if pd.isna(value):
             return None
 
@@ -400,29 +425,14 @@ def calculate_metrics(
             )
 
     return {
-        "last_price":
-            current_price,
-
-        "return_1d":
-            return_1d,
-
-        "return_1m":
-            return_1m,
-
-        "return_3m":
-            return_3m,
-
-        "return_6m":
-            return_6m,
-
-        "drawdown_from_52w_high":
-            drawdown_from_high,
-
-        "distance_from_52w_low":
-            distance_from_low,
-
-        "volume_ratio":
-            volume_ratio,
+        "last_price": current_price,
+        "return_1d": return_1d,
+        "return_1m": return_1m,
+        "return_3m": return_3m,
+        "return_6m": return_6m,
+        "drawdown_from_52w_high": drawdown_from_high,
+        "distance_from_52w_low": distance_from_low,
+        "volume_ratio": volume_ratio,
     }
 
 
@@ -468,7 +478,6 @@ def build_signals(
         r1d is not None
         and r1d <= -0.05
     ):
-
         signals.append(
             f"1-day decline {r1d:.1%}"
         )
@@ -477,7 +486,6 @@ def build_signals(
         r1m is not None
         and r1m <= -0.10
     ):
-
         signals.append(
             f"1-month decline {r1m:.1%}"
         )
@@ -486,7 +494,6 @@ def build_signals(
         r3m is not None
         and r3m <= -0.15
     ):
-
         signals.append(
             f"3-month decline {r3m:.1%}"
         )
@@ -495,7 +502,6 @@ def build_signals(
         r6m is not None
         and r6m <= -0.20
     ):
-
         signals.append(
             f"6-month decline {r6m:.1%}"
         )
@@ -504,7 +510,6 @@ def build_signals(
         drawdown is not None
         and drawdown <= -0.25
     ):
-
         signals.append(
             f"{abs(drawdown):.1%} below 52-week high"
         )
@@ -513,7 +518,6 @@ def build_signals(
         low_distance is not None
         and low_distance <= 0.10
     ):
-
         signals.append(
             f"within {low_distance:.1%} of 52-week low"
         )
@@ -522,7 +526,6 @@ def build_signals(
         volume_ratio is not None
         and volume_ratio >= 1.75
     ):
-
         signals.append(
             f"volume {volume_ratio:.1f}× recent average"
         )
@@ -569,7 +572,6 @@ def calculate_discovery_score(
     )
 
     if r1d is not None:
-
         score += (
             max(
                 0,
@@ -579,7 +581,6 @@ def calculate_discovery_score(
         )
 
     if r1m is not None:
-
         score += (
             max(
                 0,
@@ -589,7 +590,6 @@ def calculate_discovery_score(
         )
 
     if r3m is not None:
-
         score += (
             max(
                 0,
@@ -599,7 +599,6 @@ def calculate_discovery_score(
         )
 
     if r6m is not None:
-
         score += (
             max(
                 0,
@@ -609,7 +608,6 @@ def calculate_discovery_score(
         )
 
     if drawdown is not None:
-
         score += (
             max(
                 0,
@@ -622,7 +620,6 @@ def calculate_discovery_score(
         low_distance is not None
         and low_distance >= 0
     ):
-
         score += (
             max(
                 0,
@@ -635,7 +632,6 @@ def calculate_discovery_score(
         volume_ratio is not None
         and volume_ratio > 1
     ):
-
         score += (
             min(
                 volume_ratio - 1,
@@ -658,7 +654,6 @@ def build_entry_reason(
 ):
 
     if not signals:
-
         return (
             "Entered because current market data showed "
             "an elevated dislocation score."
@@ -675,16 +670,10 @@ def build_entry_reason(
 
 
 # ============================================================
-# DISCOVER CANDIDATE POOL
+# BUILD RANKED DISLOCATION POOL
 # ============================================================
 
 def build_ranked_dislocation_pool():
-    """
-    Build and rank the dislocation pool before eligibility
-    screening.
-
-    This does NOT freeze the final candidate list yet.
-    """
 
     retrieved_at = datetime.now(
         timezone.utc
@@ -725,30 +714,17 @@ def build_ranked_dislocation_pool():
 
         pool.append(
             {
-                "ticker":
-                    ticker,
-
-                "company":
-                    universe[ticker],
-
-                "metrics":
-                    metrics,
-
-                "signals":
-                    signals,
-
-                "score":
-                    score,
-
-                "retrieved_at":
-                    retrieved_at,
+                "ticker": ticker,
+                "company": universe[ticker],
+                "metrics": metrics,
+                "signals": signals,
+                "score": score,
+                "retrieved_at": retrieved_at,
             }
         )
 
     pool.sort(
-        key=lambda item: (
-            item["score"]
-        ),
+        key=lambda item: item["score"],
         reverse=True,
     )
 
@@ -756,56 +732,20 @@ def build_ranked_dislocation_pool():
 
 
 # ============================================================
-# ELIGIBILITY + FREEZE
-# ============================================================
-
-def discover_candidates(
-    # ============================================================
-# ELIGIBILITY AUDIT RESULT
-# ============================================================
-
-@dataclass
-class EligibilityAuditItem:
-    discovery_rank: int
-    ticker: str
-    company: str
-
-    discovery_score: Optional[float]
-    entry_reason: str
-
-    eligibility_status: str
-    eligible: bool
-    eligibility_reason: str
-
-    security_type: str
-    market_cap: Optional[float]
-    profitable: Optional[bool]
-    net_income: Optional[float]
-
-    eligibility_source: str
-    eligibility_retrieved_at: datetime
-
-
-# ============================================================
-# ELIGIBILITY + FREEZE
+# ELIGIBILITY + AUDIT + FREEZE
 # ============================================================
 
 def discover_candidates(
     target_count=12,
 ):
     """
-    v6.3.1 discovery sequence:
+    Sequence:
 
-    1. Find observable current market dislocations.
-    2. Rank the dislocation pool.
+    1. Find current market dislocations.
+    2. Rank them.
     3. Evaluate eligibility in ranked order.
     4. Record every eligibility decision.
     5. Freeze the first target_count eligible securities.
-    6. Stop adding names once the frozen list is complete.
-
-    Returns:
-        frozen_candidates
-        eligibility_audit
     """
 
     ranked_pool = (
@@ -830,72 +770,31 @@ def discover_candidates(
             "ticker"
         ]
 
-        eligibility = (
-            evaluate_eligibility(
-                ticker
-            )
+        eligibility = evaluate_eligibility(
+            ticker
         )
 
-        entry_reason = (
-            build_entry_reason(
-                item["signals"]
-            )
-        )
-
-        audit_item = EligibilityAuditItem(
-            discovery_rank=discovery_rank,
-
-            ticker=ticker,
-
-            company=item[
-                "company"
-            ],
-
-            discovery_score=item[
-                "score"
-            ],
-
-            entry_reason=entry_reason,
-
-            eligibility_status=(
-                eligibility.status
-            ),
-
-            eligible=(
-                eligibility.eligible
-            ),
-
-            eligibility_reason=(
-                eligibility.reason
-            ),
-
-            security_type=(
-                eligibility.security_type
-            ),
-
-            market_cap=(
-                eligibility.market_cap
-            ),
-
-            profitable=(
-                eligibility.profitable
-            ),
-
-            net_income=(
-                eligibility.net_income
-            ),
-
-            eligibility_source=(
-                eligibility.source
-            ),
-
-            eligibility_retrieved_at=(
-                eligibility.retrieved_at
-            ),
+        entry_reason = build_entry_reason(
+            item["signals"]
         )
 
         eligibility_audit.append(
-            audit_item
+            EligibilityAuditItem(
+                discovery_rank=discovery_rank,
+                ticker=ticker,
+                company=item["company"],
+                discovery_score=item["score"],
+                entry_reason=entry_reason,
+                eligibility_status=eligibility.status,
+                eligible=eligibility.eligible,
+                eligibility_reason=eligibility.reason,
+                security_type=eligibility.security_type,
+                market_cap=eligibility.market_cap,
+                profitable=eligibility.profitable,
+                net_income=eligibility.net_income,
+                eligibility_source=eligibility.source,
+                eligibility_retrieved_at=eligibility.retrieved_at,
+            )
         )
 
         if not eligibility.eligible:
@@ -905,89 +804,37 @@ def discover_candidates(
             "metrics"
         ]
 
-        candidate = DiscoveredCandidate(
-            ticker=ticker,
-
-            company=item[
-                "company"
-            ],
-
-            entry_reason=entry_reason,
-
-            last_price=metrics[
-                "last_price"
-            ],
-
-            return_1d=metrics[
-                "return_1d"
-            ],
-
-            return_1m=metrics[
-                "return_1m"
-            ],
-
-            return_3m=metrics[
-                "return_3m"
-            ],
-
-            return_6m=metrics[
-                "return_6m"
-            ],
-
-            drawdown_from_52w_high=(
-                metrics[
-                    "drawdown_from_52w_high"
-                ]
-            ),
-
-            distance_from_52w_low=(
-                metrics[
-                    "distance_from_52w_low"
-                ]
-            ),
-
-            volume_ratio=metrics[
-                "volume_ratio"
-            ],
-
-            discovery_score=item[
-                "score"
-            ],
-
-            eligibility_status=(
-                eligibility.status
-            ),
-
-            eligibility_reason=(
-                eligibility.reason
-            ),
-
-            market_cap=(
-                eligibility.market_cap
-            ),
-
-            profitable=(
-                eligibility.profitable
-            ),
-
-            discovery_source=(
-                "Yahoo Finance daily market data; "
-                "S&P 500 constituent list retrieved with "
-                "requests and parsed locally; eligibility "
-                "evaluated before final candidate freeze"
-            ),
-
-            retrieved_at=item[
-                "retrieved_at"
-            ],
-
-            signals=item[
-                "signals"
-            ],
-        )
-
         frozen_candidates.append(
-            candidate
+            DiscoveredCandidate(
+                ticker=ticker,
+                company=item["company"],
+                entry_reason=entry_reason,
+                last_price=metrics["last_price"],
+                return_1d=metrics["return_1d"],
+                return_1m=metrics["return_1m"],
+                return_3m=metrics["return_3m"],
+                return_6m=metrics["return_6m"],
+                drawdown_from_52w_high=(
+                    metrics["drawdown_from_52w_high"]
+                ),
+                distance_from_52w_low=(
+                    metrics["distance_from_52w_low"]
+                ),
+                volume_ratio=metrics["volume_ratio"],
+                discovery_score=item["score"],
+                eligibility_status=eligibility.status,
+                eligibility_reason=eligibility.reason,
+                market_cap=eligibility.market_cap,
+                profitable=eligibility.profitable,
+                discovery_source=(
+                    "Yahoo Finance daily market data; "
+                    "S&P 500 constituents retrieved with "
+                    "requests and parsed locally; eligibility "
+                    "evaluated before final candidate freeze"
+                ),
+                retrieved_at=item["retrieved_at"],
+                signals=item["signals"],
+            )
         )
 
     return (
