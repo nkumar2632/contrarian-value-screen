@@ -1,15 +1,19 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+import time
 
-import yfinance as yf
+import requests
 
 
 # ============================================================
-# CONSTANTS
+# SETTINGS
 # ============================================================
 
 MINIMUM_MARKET_CAP = 10_000_000_000
+
+REQUEST_TIMEOUT = 12
+MAX_RETRIES = 3
 
 
 # ============================================================
@@ -35,7 +39,7 @@ class EligibilityResult:
 
 
 # ============================================================
-# ETF IDENTIFICATION
+# ETF UNIVERSE
 # ============================================================
 
 KNOWN_ETFS = {
@@ -58,7 +62,23 @@ KNOWN_ETFS = {
 
 
 # ============================================================
-# SAFE NUMBER
+# HTTP
+# ============================================================
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/120.0 Safari/537.36"
+    ),
+    "Accept": "application/json,text/plain,*/*",
+}
+
+
+# ============================================================
+# SAFE HELPERS
 # ============================================================
 
 def safe_float(value):
@@ -72,89 +92,347 @@ def safe_float(value):
         return None
 
 
-# ============================================================
-# NET INCOME RETRIEVAL
-# ============================================================
-
-def get_latest_annual_net_income(stock):
+def raw_value(value):
     """
-    Retrieve the most recent available annual net income.
+    Yahoo quoteSummary usually represents numerical fields as:
 
-    Returns None if a usable value cannot be obtained.
+        {"raw": 123, "fmt": "123"}
+
+    This safely extracts the raw number.
     """
 
-    try:
-        income_stmt = stock.get_income_stmt(
-            freq="yearly"
+    if value is None:
+        return None
+
+    if isinstance(value, dict):
+        return safe_float(
+            value.get("raw")
         )
 
-        if (
-            income_stmt is None
-            or income_stmt.empty
-        ):
-            return None
+    return safe_float(
+        value
+    )
 
-        possible_rows = [
-            "Net Income",
-            "Net Income Common Stockholders",
-            "Net Income Including Noncontrolling Interests",
-        ]
 
-        for row_name in possible_rows:
+# ============================================================
+# YAHOO AUTH SESSION
+# ============================================================
 
-            if row_name not in income_stmt.index:
-                continue
+def create_yahoo_session():
+    """
+    Create a Yahoo session and retrieve the crumb token needed
+    for quoteSummary requests.
+    """
 
-            values = income_stmt.loc[
-                row_name
-            ].dropna()
+    session = requests.Session()
 
-            if values.empty:
-                continue
+    session.headers.update(
+        HEADERS
+    )
 
-            value = safe_float(
-                values.iloc[0]
+    # Yahoo commonly sets the A3 cookie here.
+    try:
+        session.get(
+            "https://fc.yahoo.com",
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception:
+        pass
+
+    crumb_response = session.get(
+        "https://query1.finance.yahoo.com/v1/test/getcrumb",
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    crumb_response.raise_for_status()
+
+    crumb = crumb_response.text.strip()
+
+    if not crumb:
+        raise RuntimeError(
+            "Yahoo crumb token was empty."
+        )
+
+    return (
+        session,
+        crumb,
+    )
+
+
+# ============================================================
+# QUOTE SUMMARY
+# ============================================================
+
+def get_quote_summary(
+    ticker,
+):
+    """
+    Retrieve only the modules required for the discovery
+    eligibility test.
+
+    Returns:
+        result dictionary
+        retrieved_at
+        error
+    """
+
+    ticker = ticker.upper().strip()
+
+    modules = (
+        "price,"
+        "financialData,"
+        "defaultKeyStatistics,"
+        "incomeStatementHistory"
+    )
+
+    last_error = None
+
+    for attempt in range(
+        1,
+        MAX_RETRIES + 1,
+    ):
+
+        retrieved_at = datetime.now(
+            timezone.utc
+        )
+
+        try:
+
+            session, crumb = (
+                create_yahoo_session()
             )
 
-            if value is not None:
-                return value
+            url = (
+                "https://query2.finance.yahoo.com/"
+                "v10/finance/quoteSummary/"
+                f"{ticker}"
+            )
 
-    except Exception:
+            response = session.get(
+                url,
+                params={
+                    "modules": modules,
+                    "crumb": crumb,
+                    "formatted": "false",
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            response.raise_for_status()
+
+            payload = response.json()
+
+            quote_summary = payload.get(
+                "quoteSummary",
+                {}
+            )
+
+            error = quote_summary.get(
+                "error"
+            )
+
+            if error:
+                raise RuntimeError(
+                    str(error)
+                )
+
+            results = quote_summary.get(
+                "result"
+            )
+
+            if not results:
+                raise RuntimeError(
+                    "Yahoo returned no fundamentals result."
+                )
+
+            return (
+                results[0],
+                retrieved_at,
+                None,
+            )
+
+        except Exception as exc:
+
+            last_error = str(
+                exc
+            )
+
+            if attempt < MAX_RETRIES:
+                time.sleep(
+                    0.5 * attempt
+                )
+
+    return (
+        None,
+        datetime.now(
+            timezone.utc
+        ),
+        last_error,
+    )
+
+
+# ============================================================
+# MARKET CAP
+# ============================================================
+
+def extract_market_cap(
+    summary,
+):
+    """
+    Prefer the price module's marketCap field.
+
+    Fall back to defaultKeyStatistics if needed.
+    """
+
+    price = summary.get(
+        "price",
+        {}
+    )
+
+    market_cap = raw_value(
+        price.get(
+            "marketCap"
+        )
+    )
+
+    if market_cap is not None:
+        return market_cap
+
+    stats = summary.get(
+        "defaultKeyStatistics",
+        {}
+    )
+
+    return raw_value(
+        stats.get(
+            "marketCap"
+        )
+    )
+
+
+# ============================================================
+# NET INCOME
+# ============================================================
+
+def extract_latest_net_income(
+    summary,
+):
+    """
+    Retrieve the latest annual Net Income from Yahoo's
+    incomeStatementHistory module when available.
+    """
+
+    history = summary.get(
+        "incomeStatementHistory",
+        {}
+    )
+
+    statements = history.get(
+        "incomeStatementHistory",
+        []
+    )
+
+    if not statements:
         return None
+
+    latest = statements[0]
+
+    possible_fields = [
+        "netIncome",
+        "netIncomeApplicableToCommonShares",
+        "netIncomeFromContinuingOps",
+    ]
+
+    for field_name in possible_fields:
+
+        value = raw_value(
+            latest.get(
+                field_name
+            )
+        )
+
+        if value is not None:
+            return value
 
     return None
 
 
 # ============================================================
-# FALLBACK PROFITABILITY
+# PROFITABILITY FALLBACKS
 # ============================================================
 
-def get_profitability_from_info(info):
+def extract_profitability(
+    summary,
+):
     """
-    Fallback profitability evidence.
+    Preferred:
+        latest annual net income > 0
 
-    trailingEps > 0 or profitMargins > 0 can establish
-    positive trailing profitability when annual statement
-    retrieval is unavailable.
+    Fallbacks:
+        trailing EPS > 0
+        profit margin > 0
 
-    This is a fallback, not the preferred source.
+    Returns:
+        profitable
+        net_income
+        method
     """
 
-    trailing_eps = safe_float(
-        info.get("trailingEps")
+    net_income = extract_latest_net_income(
+        summary
     )
 
-    profit_margin = safe_float(
-        info.get("profitMargins")
+    if net_income is not None:
+
+        return (
+            net_income > 0,
+            net_income,
+            "latest annual net income",
+        )
+
+    stats = summary.get(
+        "defaultKeyStatistics",
+        {}
+    )
+
+    trailing_eps = raw_value(
+        stats.get(
+            "trailingEps"
+        )
     )
 
     if trailing_eps is not None:
-        return trailing_eps > 0
+
+        return (
+            trailing_eps > 0,
+            None,
+            "trailing EPS",
+        )
+
+    financial_data = summary.get(
+        "financialData",
+        {}
+    )
+
+    profit_margin = raw_value(
+        financial_data.get(
+            "profitMargins"
+        )
+    )
 
     if profit_margin is not None:
-        return profit_margin > 0
 
-    return None
+        return (
+            profit_margin > 0,
+            None,
+            "profit margin",
+        )
+
+    return (
+        None,
+        None,
+        None,
+    )
 
 
 # ============================================================
@@ -164,27 +442,31 @@ def get_profitability_from_info(info):
 def evaluate_etf_eligibility(
     ticker,
 ):
-    """
-    Major unleveraged ETFs in our predefined discovery
-    universe are eligible for discovery without applying
-    corporate market-cap or profitability tests.
-    """
 
     return EligibilityResult(
         ticker=ticker,
+
         eligible=True,
+
         status="ELIGIBLE",
+
         reason=(
             "Major unleveraged ETF in the predefined "
             "v6.3.1 discovery universe."
         ),
+
         security_type="ETF",
+
         market_cap=None,
+
         profitable=None,
+
         net_income=None,
+
         source=(
             "Predefined major unleveraged ETF universe"
         ),
+
         retrieved_at=datetime.now(
             timezone.utc
         ),
@@ -199,87 +481,74 @@ def evaluate_stock_eligibility(
     ticker,
 ):
     """
-    v6.3.1 stock eligibility:
+    v6.3.1 discovery eligibility:
 
-    1. Approximately $10B or greater market capitalization.
-    2. Profitable.
+    - approximately $10B+ market capitalization
+    - profitable operating company
 
-    Missing essential eligibility data produces
-    DATA INSUFFICIENT rather than an investment-gate failure.
+    Missing essential data => DATA INSUFFICIENT
     """
 
-    retrieved_at = datetime.now(
-        timezone.utc
+    (
+        summary,
+        retrieved_at,
+        retrieval_error,
+    ) = get_quote_summary(
+        ticker
     )
 
-    try:
-        stock = yf.Ticker(
-            ticker
-        )
-
-        info = stock.get_info()
-
-    except Exception as exc:
+    if summary is None:
 
         return EligibilityResult(
             ticker=ticker,
+
             eligible=False,
+
             status="DATA INSUFFICIENT",
+
             reason=(
-                "Could not retrieve company information "
-                f"required for eligibility: {exc}"
+                "Could not retrieve Yahoo fundamentals "
+                "required for eligibility. "
+                f"Retrieval error: {retrieval_error}"
             ),
+
             security_type="STOCK",
+
             market_cap=None,
+
             profitable=None,
+
             net_income=None,
-            source="Yahoo Finance",
+
+            source=(
+                "Yahoo Finance quoteSummary"
+            ),
+
             retrieved_at=retrieved_at,
         )
-
-    if not isinstance(
-        info,
-        dict,
-    ):
-
-        info = {}
 
     # --------------------------------------------------------
     # MARKET CAP
     # --------------------------------------------------------
 
-    market_cap = safe_float(
-        info.get("marketCap")
+    market_cap = extract_market_cap(
+        summary
     )
 
     # --------------------------------------------------------
     # PROFITABILITY
     # --------------------------------------------------------
 
-    net_income = (
-        get_latest_annual_net_income(
-            stock
-        )
+    (
+        profitable,
+        net_income,
+        profitability_method,
+    ) = extract_profitability(
+        summary
     )
 
-    profitable = None
-
-    if net_income is not None:
-
-        profitable = (
-            net_income > 0
-        )
-
-    else:
-
-        profitable = (
-            get_profitability_from_info(
-                info
-            )
-        )
-
     # --------------------------------------------------------
-    # MISSING DATA
+    # DATA INSUFFICIENT
     # --------------------------------------------------------
 
     missing = []
@@ -291,106 +560,164 @@ def evaluate_stock_eligibility(
 
     if profitable is None:
         missing.append(
-            "profitability"
+            "profitability evidence"
         )
 
     if missing:
 
         return EligibilityResult(
             ticker=ticker,
+
             eligible=False,
+
             status="DATA INSUFFICIENT",
+
             reason=(
                 "Eligibility could not be established because "
-                + " and ".join(missing)
-                + " could not be retrieved reliably."
+                + " and ".join(
+                    missing
+                )
+                + " were unavailable after retrieval."
             ),
+
             security_type="STOCK",
+
             market_cap=market_cap,
+
             profitable=profitable,
+
             net_income=net_income,
-            source="Yahoo Finance",
+
+            source=(
+                "Yahoo Finance quoteSummary"
+            ),
+
             retrieved_at=retrieved_at,
         )
 
     # --------------------------------------------------------
-    # MARKET CAP EXCLUSION
+    # MARKET-CAP TEST
     # --------------------------------------------------------
 
     if market_cap < MINIMUM_MARKET_CAP:
 
         return EligibilityResult(
             ticker=ticker,
+
             eligible=False,
+
             status="INELIGIBLE",
+
             reason=(
-                f"Market capitalization ${market_cap / 1e9:.1f}B "
+                f"Market capitalization "
+                f"${market_cap / 1_000_000_000:.1f}B "
                 "is below the approximately $10B "
                 "v6.3.1 discovery threshold."
             ),
+
             security_type="STOCK",
+
             market_cap=market_cap,
+
             profitable=profitable,
+
             net_income=net_income,
-            source="Yahoo Finance",
+
+            source=(
+                "Yahoo Finance quoteSummary"
+            ),
+
             retrieved_at=retrieved_at,
         )
 
     # --------------------------------------------------------
-    # PROFITABILITY EXCLUSION
+    # PROFITABILITY TEST
     # --------------------------------------------------------
 
     if not profitable:
 
+        method_text = (
+            profitability_method
+            if profitability_method
+            else "retrieved profitability data"
+        )
+
         return EligibilityResult(
             ticker=ticker,
+
             eligible=False,
+
             status="INELIGIBLE",
+
             reason=(
-                "The company does not meet the profitable-company "
-                "requirement for the v6.3.1 discovery universe."
+                "The company does not satisfy the "
+                "profitable-company requirement based on "
+                f"{method_text}."
             ),
+
             security_type="STOCK",
+
             market_cap=market_cap,
-            profitable=profitable,
+
+            profitable=False,
+
             net_income=net_income,
-            source="Yahoo Finance",
+
+            source=(
+                "Yahoo Finance quoteSummary"
+            ),
+
             retrieved_at=retrieved_at,
         )
 
     # --------------------------------------------------------
-    # PASS
+    # ELIGIBLE
     # --------------------------------------------------------
+
+    method_text = (
+        profitability_method
+        if profitability_method
+        else "retrieved profitability data"
+    )
 
     return EligibilityResult(
         ticker=ticker,
+
         eligible=True,
+
         status="ELIGIBLE",
+
         reason=(
-            f"Market capitalization ${market_cap / 1e9:.1f}B "
-            "and positive profitability satisfy the "
-            "v6.3.1 discovery eligibility requirements."
+            f"Market capitalization "
+            f"${market_cap / 1_000_000_000:.1f}B "
+            "and positive profitability based on "
+            f"{method_text} satisfy the v6.3.1 "
+            "discovery eligibility requirements."
         ),
+
         security_type="STOCK",
+
         market_cap=market_cap,
+
         profitable=True,
+
         net_income=net_income,
-        source="Yahoo Finance",
+
+        source=(
+            "Yahoo Finance quoteSummary"
+        ),
+
         retrieved_at=retrieved_at,
     )
 
 
 # ============================================================
-# MAIN ELIGIBILITY FUNCTION
+# MAIN ROUTER
 # ============================================================
 
 def evaluate_eligibility(
     ticker,
 ):
-    """
-    Route ETFs and operating companies through the
-    appropriate eligibility logic.
-    """
 
     ticker = ticker.upper().strip()
 
