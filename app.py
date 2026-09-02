@@ -57,20 +57,19 @@ st.divider()
 st.subheader("Current Results")
 
 with st.container():
-    st.markdown(
-        """
-        <div class="ticker-card">
-            <h3>ADBE</h3>
-            <strong>Gate 5 FAIL</strong><br><br>
-
-            <span class="metric">Price:</span> $291.52<br>
-            <span class="metric">Fair value:</span> $337<br>
-            <span class="metric">Downside:</span> $200<br>
-            <span class="metric">Reward / Downside:</span> 0.50×
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+   st.markdown(
+    """
+    <div class="ticker-card">
+        <h3>ADBE</h3>
+        <strong>Gate 5 FAIL</strong>
+        <p><strong>Price:</strong> $291.52</p>
+        <p><strong>Fair value:</strong> $337</p>
+        <p><strong>Downside:</strong> $200</p>
+        <p><strong>Reward / Downside:</strong> 0.50×</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.expander("View full ADBE analysis"):
     st.write("Detailed valuation, catalyst, bear case, and invalidation will go here.")
