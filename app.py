@@ -21,14 +21,12 @@ st.set_page_config(
 
 
 # ============================================================
-# SAMPLE SCREEN DATA
+# SAMPLE DATA
 # ============================================================
 
-# These are temporary sample records used to build and test
-# the application architecture.
-#
-# They are NOT live market data and should not be treated
-# as current investment analysis.
+# DEVELOPMENT DATA ONLY
+# These are temporary sample values used to test the app.
+# They are NOT live market data.
 
 screen_data = {
     "run_date": "2026-09-01",
@@ -83,7 +81,42 @@ screen_data = {
 
 
 # ============================================================
-# RUN SCREENING ENGINE
+# HELPER FUNCTIONS
+# ============================================================
+
+def format_money(value):
+    if value is None:
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def format_percent(value):
+    if value is None:
+        return "N/A"
+    return f"{value:.1%}"
+
+
+def format_ratio(value):
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}×"
+
+
+def gate_icon(status):
+    if status == GateStatus.PASS:
+        return "✅"
+
+    if status == GateStatus.FAIL:
+        return "❌"
+
+    if status == GateStatus.DATA_INSUFFICIENT:
+        return "⚠️"
+
+    return "➖"
+
+
+# ============================================================
+# SCREENING ENGINE
 # ============================================================
 
 candidates = screen_data["candidates"]
@@ -93,13 +126,12 @@ for stock in candidates:
     gate_results = {}
 
     # --------------------------------------------------------
-    # TEMPORARY GATE 1–4 PLACEHOLDERS
+    # GATES 1–4
     # --------------------------------------------------------
+    # TEMPORARY DEVELOPMENT PLACEHOLDERS ONLY.
     #
-    # These PASS values exist ONLY to test the application flow.
-    # They are not actual investment judgments.
-    #
-    # We will replace these with the precise v6.3.1 rules.
+    # These are NOT actual investment conclusions.
+    # They will be replaced with the exact v6.3.1 rules.
 
     for gate_number in range(1, 5):
 
@@ -107,13 +139,13 @@ for stock in candidates:
             gate=gate_number,
             status=GateStatus.PASS,
             reason=(
-                "Placeholder PASS until Gate "
-                f"{gate_number} logic is implemented."
+                f"Development placeholder. "
+                f"Gate {gate_number} logic not yet implemented."
             ),
         )
 
     # --------------------------------------------------------
-    # REAL GATE 5 CALCULATION
+    # GATE 5
     # --------------------------------------------------------
 
     gate_results[5] = evaluate_gate_5(
@@ -125,48 +157,47 @@ for stock in candidates:
 
     stock["gate_results"] = gate_results
 
-    # Overall classification
+    # --------------------------------------------------------
+    # FINAL CLASSIFICATION
+    # --------------------------------------------------------
 
     stock["status"] = classify_candidate(gate_results)
-
-    # Determine first failed gate
 
     stock["failed_gate"] = None
 
     for gate_number in range(1, 6):
 
-        result = gate_results.get(gate_number)
+        result = gate_results[gate_number]
 
-        if result and result.status == GateStatus.FAIL:
+        if result.status == GateStatus.FAIL:
             stock["failed_gate"] = gate_number
             break
 
-    # Pull calculated Gate 5 metrics into the stock record
+    # --------------------------------------------------------
+    # GATE 5 METRICS
+    # --------------------------------------------------------
 
     gate_5_metrics = gate_results[5].metrics or {}
-
-    stock["reward_downside"] = gate_5_metrics.get(
-        "reward_downside"
-    )
 
     stock["annualized_return"] = gate_5_metrics.get(
         "annualized_return"
     )
 
-    # Use Gate 5 explanation for near-miss failure reason
+    stock["reward_downside"] = gate_5_metrics.get(
+        "reward_downside"
+    )
 
-    if gate_results[5].status == GateStatus.FAIL:
+    stock["failure_reason"] = None
+
+    if gate_results[5].status in {
+        GateStatus.FAIL,
+        GateStatus.DATA_INSUFFICIENT,
+    }:
         stock["failure_reason"] = gate_results[5].reason
-
-    elif gate_results[5].status == GateStatus.DATA_INSUFFICIENT:
-        stock["failure_reason"] = gate_results[5].reason
-
-    else:
-        stock["failure_reason"] = None
 
 
 # ============================================================
-# DERIVED RESULTS
+# RESULT GROUPS
 # ============================================================
 
 survivors = [
@@ -195,144 +226,7 @@ data_insufficient = [
 
 
 # ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-
-def format_money(value):
-    if value is None:
-        return "N/A"
-
-    return f"${value:,.2f}"
-
-
-def format_ratio(value):
-    if value is None:
-        return "N/A"
-
-    return f"{value:.2f}×"
-
-
-def format_percent(value):
-    if value is None:
-        return "N/A"
-
-    return f"{value:.1%}"
-
-
-def display_stock_card(stock, headline):
-
-    st.markdown(
-        f"""
-        <div class="ticker-card">
-            <h3>{stock["ticker"]}</h3>
-            <div class="company-name">
-                {stock["company"]}
-            </div>
-
-            <p>
-                <strong>{headline}</strong>
-            </p>
-
-            <p>
-                <strong>Price:</strong>
-                {format_money(stock["price"])}
-            </p>
-
-            <p>
-                <strong>Fair value:</strong>
-                {format_money(stock["fair_value"])}
-            </p>
-
-            <p>
-                <strong>Downside:</strong>
-                {format_money(stock["downside_value"])}
-            </p>
-
-            <p>
-                <strong>Annualized return:</strong>
-                {format_percent(stock["annualized_return"])}
-            </p>
-
-            <p>
-                <strong>Reward / Downside:</strong>
-                {format_ratio(stock["reward_downside"])}
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def display_full_analysis(stock):
-
-    with st.expander(
-        f"View full {stock['ticker']} analysis"
-    ):
-
-        st.write(f"**Company:** {stock['company']}")
-
-        st.write("### Gate Results")
-
-        for gate_number in range(1, 6):
-
-            result = stock["gate_results"][gate_number]
-
-            st.write(
-                f"**Gate {gate_number}: "
-                f"{result.status.value}**"
-            )
-
-            st.caption(result.reason)
-
-        st.write("### Valuation")
-
-        st.write(
-            f"**Current price:** "
-            f"{format_money(stock['price'])}"
-        )
-
-        st.write(
-            f"**Base fair value:** "
-            f"{format_money(stock['fair_value'])}"
-        )
-
-        st.write(
-            f"**Downside value:** "
-            f"{format_money(stock['downside_value'])}"
-        )
-
-        st.write(
-            f"**Time to value:** "
-            f"{stock['months_to_value']} months"
-        )
-
-        st.write(
-            f"**Annualized base return:** "
-            f"{format_percent(stock['annualized_return'])}"
-        )
-
-        st.write(
-            f"**Reward / downside:** "
-            f"{format_ratio(stock['reward_downside'])}"
-        )
-
-        st.write("### Catalyst")
-
-        st.write(stock["catalyst"])
-
-        st.write("### Bear Case")
-
-        st.write(stock["bear_case"])
-
-        if stock["failure_reason"]:
-
-            st.write("### Why It Failed")
-
-            st.write(stock["failure_reason"])
-
-
-# ============================================================
-# MOBILE-FIRST CSS
+# MOBILE-FRIENDLY STYLING
 # ============================================================
 
 st.markdown(
@@ -345,28 +239,6 @@ st.markdown(
         padding-left: 1rem;
         padding-right: 1rem;
         padding-bottom: 3rem;
-    }
-
-    .ticker-card {
-        border: 1px solid rgba(128,128,128,0.30);
-        border-radius: 14px;
-        padding: 16px;
-        margin-bottom: 10px;
-    }
-
-    .ticker-card h3 {
-        margin-top: 0;
-        margin-bottom: 2px;
-    }
-
-    .company-name {
-        opacity: 0.65;
-        margin-bottom: 12px;
-    }
-
-    .ticker-card p {
-        margin-top: 7px;
-        margin-bottom: 7px;
     }
 
     div.stButton > button {
@@ -391,8 +263,8 @@ st.markdown(
             font-size: 1.5rem !important;
         }
 
-        .ticker-card {
-            padding: 14px;
+        h3 {
+            font-size: 1.25rem !important;
         }
     }
 
@@ -400,6 +272,130 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+# ============================================================
+# DISPLAY FUNCTIONS
+# ============================================================
+
+def display_stock_card(stock):
+
+    with st.container(border=True):
+
+        st.subheader(stock["ticker"])
+
+        st.caption(stock["company"])
+
+        if stock["status"] == "SURVIVOR":
+            st.success("PASS — All 5 Gates")
+
+        elif stock["status"] == "NEAR MISS":
+            st.error(
+                f"Gate {stock['failed_gate']} FAIL — Near Miss"
+            )
+
+        elif stock["status"] == "FAIL":
+            st.error(
+                f"Gate {stock['failed_gate']} FAIL"
+            )
+
+        elif stock["status"] == "DATA INSUFFICIENT":
+            st.warning("DATA INSUFFICIENT")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.metric(
+                "Price",
+                format_money(stock["price"]),
+            )
+
+            st.metric(
+                "Downside",
+                format_money(stock["downside_value"]),
+            )
+
+        with col2:
+
+            st.metric(
+                "Fair Value",
+                format_money(stock["fair_value"]),
+            )
+
+            st.metric(
+                "Reward / Downside",
+                format_ratio(stock["reward_downside"]),
+            )
+
+        st.metric(
+            "Annualized Base Return",
+            format_percent(stock["annualized_return"]),
+        )
+
+        with st.expander(
+            f"View full {stock['ticker']} analysis"
+        ):
+
+            st.markdown("### Gate Results")
+
+            for gate_number in range(1, 6):
+
+                result = stock["gate_results"][gate_number]
+
+                st.write(
+                    f"{gate_icon(result.status)} "
+                    f"**Gate {gate_number}: "
+                    f"{result.status.value}**"
+                )
+
+                st.caption(result.reason)
+
+            st.markdown("### Valuation")
+
+            st.write(
+                f"**Current price:** "
+                f"{format_money(stock['price'])}"
+            )
+
+            st.write(
+                f"**Base fair value:** "
+                f"{format_money(stock['fair_value'])}"
+            )
+
+            st.write(
+                f"**Downside value:** "
+                f"{format_money(stock['downside_value'])}"
+            )
+
+            st.write(
+                f"**Time to value:** "
+                f"{stock['months_to_value']} months"
+            )
+
+            st.write(
+                f"**Annualized return:** "
+                f"{format_percent(stock['annualized_return'])}"
+            )
+
+            st.write(
+                f"**Reward / downside:** "
+                f"{format_ratio(stock['reward_downside'])}"
+            )
+
+            st.markdown("### Catalyst")
+
+            st.write(stock["catalyst"])
+
+            st.markdown("### Bear Case")
+
+            st.write(stock["bear_case"])
+
+            if stock["failure_reason"]:
+
+                st.markdown("### Why It Failed")
+
+                st.write(stock["failure_reason"])
 
 
 # ============================================================
@@ -445,8 +441,8 @@ if st.button(
 ):
 
     st.info(
-        "The live screening workflow will be connected "
-        "in a later step."
+        "Live screening is not connected yet. "
+        "The current screen uses development sample data."
     )
 
 
@@ -456,22 +452,18 @@ if st.button(
 
 st.divider()
 
-st.subheader("Survivors")
+st.header("Survivors")
 
 if not survivors:
 
-    st.write(
+    st.info(
         "No candidates passed all five gates."
     )
 
-for stock in survivors:
+else:
 
-    display_stock_card(
-        stock,
-        "PASS — All Gates",
-    )
-
-    display_full_analysis(stock)
+    for stock in survivors:
+        display_stock_card(stock)
 
 
 # ============================================================
@@ -480,7 +472,7 @@ for stock in survivors:
 
 st.divider()
 
-st.subheader("Near Misses")
+st.header("Near Misses")
 
 if not near_misses:
 
@@ -488,22 +480,10 @@ if not near_misses:
         "No Gate 5 near misses."
     )
 
-for stock in near_misses:
+else:
 
-    failed_gate = stock["failed_gate"]
-
-    headline = (
-        f"Gate {failed_gate} FAIL"
-        if failed_gate
-        else "NEAR MISS"
-    )
-
-    display_stock_card(
-        stock,
-        headline,
-    )
-
-    display_full_analysis(stock)
+    for stock in near_misses:
+        display_stock_card(stock)
 
 
 # ============================================================
@@ -514,24 +494,10 @@ if failed_candidates:
 
     st.divider()
 
-    st.subheader("Failed Candidates")
+    st.header("Failed Candidates")
 
     for stock in failed_candidates:
-
-        failed_gate = stock["failed_gate"]
-
-        headline = (
-            f"Gate {failed_gate} FAIL"
-            if failed_gate
-            else "FAIL"
-        )
-
-        display_stock_card(
-            stock,
-            headline,
-        )
-
-        display_full_analysis(stock)
+        display_stock_card(stock)
 
 
 # ============================================================
@@ -542,16 +508,10 @@ if data_insufficient:
 
     st.divider()
 
-    st.subheader("Data Insufficient")
+    st.header("Data Insufficient")
 
     for stock in data_insufficient:
-
-        display_stock_card(
-            stock,
-            "DATA INSUFFICIENT",
-        )
-
-        display_full_analysis(stock)
+        display_stock_card(stock)
 
 
 # ============================================================
@@ -565,6 +525,10 @@ st.caption(
 )
 
 st.caption(
-    "Development version — sample data only. "
-    "Gate 1–4 logic has not yet been implemented."
+    "Development version — sample data only."
+)
+
+st.caption(
+    "Gate 1–4 results are temporary placeholders. "
+    "Gate 5 is calculated by screening_engine.py."
 )
