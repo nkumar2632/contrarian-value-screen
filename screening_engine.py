@@ -1,889 +1,837 @@
 from dataclasses import dataclass, field
-from enum import Enum
+from datetime import datetime, timezone
 from typing import Optional
+import io
+
+import pandas as pd
+import requests
+import yfinance as yf
 
 
 # ============================================================
-# STATUS TYPES
-# ============================================================
-
-class GateStatus(str, Enum):
-    PASS = "PASS"
-    FAIL = "FAIL"
-    DATA_INSUFFICIENT = "DATA INSUFFICIENT"
-    NOT_EVALUATED = "NOT EVALUATED"
-
-
-class CandidateStatus(str, Enum):
-    SURVIVOR = "SURVIVOR"
-    NEAR_MISS = "NEAR MISS"
-    FAIL = "FAIL"
-    DATA_INSUFFICIENT = "DATA INSUFFICIENT"
-    NOT_EVALUATED = "NOT EVALUATED"
-
-
-# ============================================================
-# GENERIC GATE RESULT
+# DISCOVERY RESULT
 # ============================================================
 
 @dataclass
-class GateResult:
-    gate: int
-    status: GateStatus
-    reason: str
-    metrics: dict = field(default_factory=dict)
-    evidence: list = field(default_factory=list)
+class DiscoveredCandidate:
+    ticker: str
+    company: str
+    entry_reason: str
+
+    last_price: Optional[float]
+
+    return_1d: Optional[float]
+    return_1m: Optional[float]
+    return_3m: Optional[float]
+    return_6m: Optional[float]
+
+    drawdown_from_52w_high: Optional[float]
+    distance_from_52w_low: Optional[float]
+
+    volume_ratio: Optional[float]
+    discovery_score: Optional[float]
+
+    discovery_source: str
+    retrieved_at: datetime
+
+    signals: list = field(default_factory=list)
 
 
 # ============================================================
-# GATE 1 INPUT
+# MAJOR UNLEVERAGED ETF UNIVERSE
 # ============================================================
 
-@dataclass
-class Gate1Input:
-    valuation_method_1: Optional[str] = None
-    valuation_result_1: Optional[str] = None
+MAJOR_ETFS = {
+    "SPY": "SPDR S&P 500 ETF Trust",
+    "QQQ": "Invesco QQQ Trust",
+    "IWM": "iShares Russell 2000 ETF",
+    "DIA": "SPDR Dow Jones Industrial Average ETF",
 
-    valuation_method_2: Optional[str] = None
-    valuation_result_2: Optional[str] = None
-
-    check_1_supports_undervaluation: Optional[bool] = None
-    check_2_supports_undervaluation: Optional[bool] = None
-
-    methods_materially_contradict: Optional[bool] = None
-
-    evidence: list = field(default_factory=list)
-    retrieval_attempts: list = field(default_factory=list)
-
-
-# ============================================================
-# GATE 2 INPUT
-# ============================================================
-
-@dataclass
-class Gate2Input:
-    mispricing_mechanism: Optional[str] = None
-    economic_explanation: Optional[str] = None
-    mechanism_supported: Optional[bool] = None
-
-    evidence: list = field(default_factory=list)
-    retrieval_attempts: list = field(default_factory=list)
+    "XLK": "Technology Select Sector SPDR Fund",
+    "XLF": "Financial Select Sector SPDR Fund",
+    "XLV": "Health Care Select Sector SPDR Fund",
+    "XLY": "Consumer Discretionary Select Sector SPDR Fund",
+    "XLP": "Consumer Staples Select Sector SPDR Fund",
+    "XLI": "Industrial Select Sector SPDR Fund",
+    "XLE": "Energy Select Sector SPDR Fund",
+    "XLU": "Utilities Select Sector SPDR Fund",
+    "XLRE": "Real Estate Select Sector SPDR Fund",
+    "XLB": "Materials Select Sector SPDR Fund",
+    "XLC": "Communication Services Select Sector SPDR Fund",
+}
 
 
 # ============================================================
-# GATE 3 INPUT
+# S&P 500 UNIVERSE
 # ============================================================
 
-@dataclass
-class Gate3Input:
-    strongest_bear_case: Optional[str] = None
+def get_sp500_universe():
+    """
+    Retrieve the current S&P 500 constituent list using
+    an explicit browser-style HTTP request.
 
-    structural_impairment_sufficient: Optional[bool] = None
+    This avoids relying on pandas to make the HTTP request.
 
-    unresolved_structural_risks: list = field(default_factory=list)
+    The S&P 500 is being used as a reproducible large-cap
+    discovery universe. It is NOT the entire U.S. market.
+    """
 
-    evidence: list = field(default_factory=list)
-    retrieval_attempts: list = field(default_factory=list)
-
-
-# ============================================================
-# GATE 4 INPUT
-# ============================================================
-
-@dataclass
-class Gate4Input:
-    catalyst: Optional[str] = None
-    economic_link: Optional[str] = None
-    timing_months: Optional[float] = None
-
-    catalyst_supported: Optional[bool] = None
-
-    evidence: list = field(default_factory=list)
-    retrieval_attempts: list = field(default_factory=list)
-
-
-# ============================================================
-# GATE 5 INPUT
-# ============================================================
-
-@dataclass
-class Gate5Input:
-    current_price: Optional[float] = None
-
-    base_operating_assumption: Optional[str] = None
-
-    fair_value_low: Optional[float] = None
-    fair_value_high: Optional[float] = None
-    conservative_fair_value: Optional[float] = None
-    fair_value_basis: Optional[str] = None
-
-    adverse_operating_assumption: Optional[str] = None
-
-    downside_low: Optional[float] = None
-    downside_high: Optional[float] = None
-    conservative_downside: Optional[float] = None
-    downside_basis: Optional[str] = None
-
-    months_to_value: Optional[float] = None
-
-    evidence: list = field(default_factory=list)
-
-
-# ============================================================
-# BASIC MATH
-# ============================================================
-
-def annualized_return(
-    current_price: float,
-    fair_value: float,
-    months_to_value: float,
-) -> Optional[float]:
-
-    if (
-        current_price is None
-        or fair_value is None
-        or months_to_value is None
-        or current_price <= 0
-        or fair_value <= 0
-        or months_to_value <= 0
-    ):
-        return None
-
-    return (
-        (fair_value / current_price)
-        ** (12 / months_to_value)
-        - 1
+    url = (
+        "https://en.wikipedia.org/wiki/"
+        "List_of_S%26P_500_companies"
     )
 
-
-def upside_percent(
-    current_price: float,
-    fair_value: float,
-) -> Optional[float]:
-
-    if (
-        current_price is None
-        or fair_value is None
-        or current_price <= 0
-    ):
-        return None
-
-    return (
-        fair_value - current_price
-    ) / current_price
-
-
-def downside_percent(
-    current_price: float,
-    downside_value: float,
-) -> Optional[float]:
-
-    if (
-        current_price is None
-        or downside_value is None
-        or current_price <= 0
-    ):
-        return None
-
-    return (
-        current_price - downside_value
-    ) / current_price
-
-
-def reward_downside_ratio(
-    current_price: float,
-    fair_value: float,
-    downside_value: float,
-) -> Optional[float]:
-
-    if (
-        current_price is None
-        or fair_value is None
-        or downside_value is None
-    ):
-        return None
-
-    reward = fair_value - current_price
-    downside = current_price - downside_value
-
-    if downside <= 0:
-        return None
-
-    return reward / downside
-
-
-# ============================================================
-# GATE 1
-# IS IT ACTUALLY CHEAP?
-# ============================================================
-
-def evaluate_gate_1(data: Gate1Input) -> GateResult:
-
-    required = [
-        data.valuation_method_1,
-        data.valuation_result_1,
-        data.valuation_method_2,
-        data.valuation_result_2,
-        data.check_1_supports_undervaluation,
-        data.check_2_supports_undervaluation,
-        data.methods_materially_contradict,
-    ]
-
-    if any(value is None for value in required):
-
-        return GateResult(
-            gate=1,
-            status=GateStatus.DATA_INSUFFICIENT,
-            reason=(
-                "Two reliable valuation checks could not "
-                "be completed."
-            ),
-            evidence=data.evidence,
-            metrics={
-                "retrieval_attempts":
-                    data.retrieval_attempts
-            },
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 "
+            "(Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
         )
-
-    if data.methods_materially_contradict:
-
-        return GateResult(
-            gate=1,
-            status=GateStatus.FAIL,
-            reason=(
-                "The two valuation methods materially "
-                "contradict the undervaluation thesis."
-            ),
-            evidence=data.evidence,
-        )
-
-    if not (
-        data.check_1_supports_undervaluation
-        and data.check_2_supports_undervaluation
-    ):
-
-        return GateResult(
-            gate=1,
-            status=GateStatus.FAIL,
-            reason=(
-                "Available valuation evidence does not "
-                "establish sufficient undervaluation."
-            ),
-            evidence=data.evidence,
-        )
-
-    return GateResult(
-        gate=1,
-        status=GateStatus.PASS,
-        reason=(
-            "Two appropriate valuation checks support "
-            "the undervaluation thesis without material "
-            "contradiction."
-        ),
-        evidence=data.evidence,
-        metrics={
-            "valuation_method_1":
-                data.valuation_method_1,
-            "valuation_result_1":
-                data.valuation_result_1,
-            "valuation_method_2":
-                data.valuation_method_2,
-            "valuation_result_2":
-                data.valuation_result_2,
-        },
-    )
-
-
-# ============================================================
-# GATE 2
-# WHY IS THE MARKET WRONG?
-# ============================================================
-
-def evaluate_gate_2(data: Gate2Input) -> GateResult:
-
-    if (
-        not data.mispricing_mechanism
-        or not data.economic_explanation
-        or data.mechanism_supported is None
-    ):
-
-        return GateResult(
-            gate=2,
-            status=GateStatus.DATA_INSUFFICIENT,
-            reason=(
-                "A concrete, evidence-supported "
-                "mispricing mechanism could not be "
-                "reliably evaluated."
-            ),
-            evidence=data.evidence,
-            metrics={
-                "retrieval_attempts":
-                    data.retrieval_attempts
-            },
-        )
-
-    if not data.mechanism_supported:
-
-        return GateResult(
-            gate=2,
-            status=GateStatus.FAIL,
-            reason=(
-                "Current evidence does not support a "
-                "specific economic or market mechanism "
-                "explaining why the price may be wrong."
-            ),
-            evidence=data.evidence,
-        )
-
-    return GateResult(
-        gate=2,
-        status=GateStatus.PASS,
-        reason=(
-            "A concrete, evidence-supported mechanism "
-            "exists that could explain the apparent "
-            "mispricing."
-        ),
-        evidence=data.evidence,
-        metrics={
-            "mispricing_mechanism":
-                data.mispricing_mechanism,
-            "economic_explanation":
-                data.economic_explanation,
-        },
-    )
-
-
-# ============================================================
-# GATE 3
-# WHY MIGHT THE MARKET BE RIGHT?
-# ============================================================
-
-def evaluate_gate_3(data: Gate3Input) -> GateResult:
-
-    if (
-        not data.strongest_bear_case
-        or data.structural_impairment_sufficient
-        is None
-    ):
-
-        return GateResult(
-            gate=3,
-            status=GateStatus.DATA_INSUFFICIENT,
-            reason=(
-                "The strongest structural bear case "
-                "could not be reliably evaluated."
-            ),
-            evidence=data.evidence,
-            metrics={
-                "retrieval_attempts":
-                    data.retrieval_attempts
-            },
-        )
-
-    if data.structural_impairment_sufficient:
-
-        return GateResult(
-            gate=3,
-            status=GateStatus.FAIL,
-            reason=(
-                "Structural deterioration provides a "
-                "sufficient explanation for the apparent "
-                "valuation discount."
-            ),
-            evidence=data.evidence,
-            metrics={
-                "strongest_bear_case":
-                    data.strongest_bear_case
-            },
-        )
-
-    return GateResult(
-        gate=3,
-        status=GateStatus.PASS,
-        reason=(
-            "The bear case remains relevant, but current "
-            "evidence does not establish structural "
-            "impairment as a sufficient explanation for "
-            "the discount."
-        ),
-        evidence=data.evidence,
-        metrics={
-            "strongest_bear_case":
-                data.strongest_bear_case,
-            "unresolved_structural_risks":
-                data.unresolved_structural_risks,
-        },
-    )
-
-
-# ============================================================
-# GATE 4
-# WHAT CHANGES THE MARKET'S MIND?
-# ============================================================
-
-def evaluate_gate_4(data: Gate4Input) -> GateResult:
-
-    if (
-        not data.catalyst
-        or not data.economic_link
-        or data.timing_months is None
-        or data.catalyst_supported is None
-    ):
-
-        return GateResult(
-            gate=4,
-            status=GateStatus.DATA_INSUFFICIENT,
-            reason=(
-                "A specific evidence-supported catalyst "
-                "with economic impact and timing could "
-                "not be reliably established."
-            ),
-            evidence=data.evidence,
-            metrics={
-                "retrieval_attempts":
-                    data.retrieval_attempts
-            },
-        )
-
-    timing_valid = (
-        6 <= data.timing_months <= 18
-    )
-
-    if (
-        not data.catalyst_supported
-        or not timing_valid
-    ):
-
-        return GateResult(
-            gate=4,
-            status=GateStatus.FAIL,
-            reason=(
-                "No sufficiently supported catalyst or "
-                "operating mechanism is expected to "
-                "affect value within approximately "
-                "6–18 months."
-            ),
-            evidence=data.evidence,
-        )
-
-    return GateResult(
-        gate=4,
-        status=GateStatus.PASS,
-        reason=(
-            "A specific evidence-supported catalyst "
-            "exists with a plausible economic impact "
-            "within the required time horizon."
-        ),
-        evidence=data.evidence,
-        metrics={
-            "catalyst":
-                data.catalyst,
-            "economic_link":
-                data.economic_link,
-            "timing_months":
-                data.timing_months,
-        },
-    )
-
-
-# ============================================================
-# GATE 5
-# IS THE PAYOFF WORTH IT?
-# ============================================================
-
-def evaluate_gate_5(
-    data: Gate5Input,
-    minimum_annualized_return: float = 0.15,
-    minimum_reward_downside: float = 2.0,
-) -> GateResult:
-
-    required = [
-        data.current_price,
-        data.base_operating_assumption,
-        data.fair_value_low,
-        data.fair_value_high,
-        data.conservative_fair_value,
-        data.fair_value_basis,
-        data.adverse_operating_assumption,
-        data.downside_low,
-        data.downside_high,
-        data.conservative_downside,
-        data.downside_basis,
-        data.months_to_value,
-    ]
-
-    if any(value is None for value in required):
-
-        return GateResult(
-            gate=5,
-            status=GateStatus.DATA_INSUFFICIENT,
-            reason=(
-                "Required valuation or operating "
-                "scenario inputs are unavailable."
-            ),
-            evidence=data.evidence,
-        )
-
-    # Conservative fair value must not exceed
-    # the high end of the stated fair-value range.
-
-    if not (
-        min(
-            data.fair_value_low,
-            data.fair_value_high,
-        )
-        <= data.conservative_fair_value
-        <= max(
-            data.fair_value_low,
-            data.fair_value_high,
-        )
-    ):
-
-        return GateResult(
-            gate=5,
-            status=GateStatus.DATA_INSUFFICIENT,
-            reason=(
-                "Conservative fair value is outside "
-                "the stated reasonable fair-value range."
-            ),
-            evidence=data.evidence,
-        )
-
-    # Downside must likewise fall inside
-    # its stated reasonable range.
-
-    if not (
-        min(
-            data.downside_low,
-            data.downside_high,
-        )
-        <= data.conservative_downside
-        <= max(
-            data.downside_low,
-            data.downside_high,
-        )
-    ):
-
-        return GateResult(
-            gate=5,
-            status=GateStatus.DATA_INSUFFICIENT,
-            reason=(
-                "Conservative downside value is outside "
-                "the stated reasonable downside range."
-            ),
-            evidence=data.evidence,
-        )
-
-    ann_return = annualized_return(
-        current_price=data.current_price,
-        fair_value=data.conservative_fair_value,
-        months_to_value=data.months_to_value,
-    )
-
-    upside = upside_percent(
-        current_price=data.current_price,
-        fair_value=data.conservative_fair_value,
-    )
-
-    downside = downside_percent(
-        current_price=data.current_price,
-        downside_value=data.conservative_downside,
-    )
-
-    reward_downside = reward_downside_ratio(
-        current_price=data.current_price,
-        fair_value=data.conservative_fair_value,
-        downside_value=data.conservative_downside,
-    )
-
-    metrics = {
-        "current_price":
-            data.current_price,
-
-        "base_operating_assumption":
-            data.base_operating_assumption,
-
-        "fair_value_range": (
-            data.fair_value_low,
-            data.fair_value_high,
-        ),
-
-        "conservative_fair_value":
-            data.conservative_fair_value,
-
-        "fair_value_basis":
-            data.fair_value_basis,
-
-        "adverse_operating_assumption":
-            data.adverse_operating_assumption,
-
-        "downside_range": (
-            data.downside_low,
-            data.downside_high,
-        ),
-
-        "conservative_downside":
-            data.conservative_downside,
-
-        "downside_basis":
-            data.downside_basis,
-
-        "upside_percent":
-            upside,
-
-        "downside_percent":
-            downside,
-
-        "reward_downside":
-            reward_downside,
-
-        "annualized_return":
-            ann_return,
-
-        "months_to_value":
-            data.months_to_value,
-
-        "minimum_annualized_return":
-            minimum_annualized_return,
-
-        "minimum_reward_downside":
-            minimum_reward_downside,
     }
 
-    if (
-        ann_return is None
-        or reward_downside is None
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=20,
+    )
+
+    response.raise_for_status()
+
+    tables = pd.read_html(
+        io.StringIO(response.text)
+    )
+
+    if not tables:
+        raise RuntimeError(
+            "No tables found on S&P 500 source page."
+        )
+
+    table = tables[0]
+
+    required_columns = {
+        "Symbol",
+        "Security",
+    }
+
+    if not required_columns.issubset(
+        set(table.columns)
     ):
-
-        return GateResult(
-            gate=5,
-            status=GateStatus.DATA_INSUFFICIENT,
-            reason=(
-                "Gate 5 return or downside metrics "
-                "could not be calculated reliably."
-            ),
-            metrics=metrics,
-            evidence=data.evidence,
+        raise RuntimeError(
+            "S&P 500 table did not contain the expected columns."
         )
 
-    return_pass = (
-        ann_return
-        >= minimum_annualized_return
-    )
+    universe = {}
 
-    asymmetry_pass = (
-        reward_downside
-        >= minimum_reward_downside
-    )
+    for _, row in table.iterrows():
 
-    if return_pass and asymmetry_pass:
+        ticker = str(
+            row["Symbol"]
+        ).strip()
 
-        return GateResult(
-            gate=5,
-            status=GateStatus.PASS,
-            reason=(
-                f"Using the conservative fair value "
-                f"and conservative downside case, "
-                f"annualized base return is "
-                f"{ann_return:.1%} and reward/downside "
-                f"is {reward_downside:.2f}x."
-            ),
-            metrics=metrics,
-            evidence=data.evidence,
+        company = str(
+            row["Security"]
+        ).strip()
+
+        # Yahoo Finance represents Berkshire-style
+        # class tickers with "-" instead of "."
+        ticker = ticker.replace(
+            ".",
+            "-",
         )
 
-    failure_reasons = []
+        if ticker:
+            universe[ticker] = company
 
-    if not return_pass:
-
-        failure_reasons.append(
-            f"annualized base return "
-            f"{ann_return:.1%} is below "
-            f"{minimum_annualized_return:.0%}"
+    if not universe:
+        raise RuntimeError(
+            "S&P 500 universe was empty after parsing."
         )
 
-    if not asymmetry_pass:
+    return universe
 
-        failure_reasons.append(
-            f"reward/downside "
-            f"{reward_downside:.2f}x is below "
-            f"{minimum_reward_downside:.2f}x"
+
+# ============================================================
+# FULL DISCOVERY UNIVERSE
+# ============================================================
+
+def build_discovery_universe():
+    """
+    Build the frozen discovery universe before gating.
+    """
+
+    universe = get_sp500_universe()
+
+    for ticker, name in MAJOR_ETFS.items():
+        universe[ticker] = name
+
+    return universe
+
+
+# ============================================================
+# DOWNLOAD PRICE HISTORY
+# ============================================================
+
+def download_history(tickers):
+    """
+    Download approximately one year of daily market history.
+
+    auto_adjust=False preserves reported Close values.
+    """
+
+    ticker_list = list(tickers)
+
+    if not ticker_list:
+        raise RuntimeError(
+            "No tickers supplied to price-history download."
         )
 
-    return GateResult(
-        gate=5,
-        status=GateStatus.FAIL,
-        reason=(
-            "Fails the robustness rule using "
-            "conservative valuation assumptions: "
-            + "; ".join(failure_reasons)
-        ),
-        metrics=metrics,
-        evidence=data.evidence,
+    data = yf.download(
+        tickers=ticker_list,
+        period="1y",
+        interval="1d",
+        group_by="column",
+        auto_adjust=False,
+        progress=False,
+        threads=True,
     )
 
+    if data is None or data.empty:
+        raise RuntimeError(
+            "Yahoo Finance returned no discovery price history."
+        )
 
-# ============================================================
-# FIRST FAILED GATE
-# ============================================================
-
-def first_failed_gate(
-    gates: dict,
-) -> Optional[int]:
-
-    for gate_number in range(1, 6):
-
-        result = gates.get(gate_number)
-
-        if (
-            result
-            and result.status == GateStatus.FAIL
-        ):
-            return gate_number
-
-    return None
+    return data
 
 
 # ============================================================
-# FINAL CLASSIFICATION
+# SAFE HELPERS
 # ============================================================
 
-def classify_candidate(
-    gates: dict,
-) -> CandidateStatus:
+def safe_float(value):
 
-    for gate_number in range(1, 6):
+    try:
 
-        result = gates.get(gate_number)
+        if pd.isna(value):
+            return None
 
-        if result is None:
+        return float(value)
 
-            return CandidateStatus.NOT_EVALUATED
-
-        if (
-            result.status
-            == GateStatus.DATA_INSUFFICIENT
-        ):
-
-            return (
-                CandidateStatus
-                .DATA_INSUFFICIENT
-            )
-
-        if result.status == GateStatus.FAIL:
-
-            if gate_number == 5:
-
-                return (
-                    CandidateStatus
-                    .NEAR_MISS
-                )
-
-            return CandidateStatus.FAIL
-
-        if (
-            result.status
-            != GateStatus.PASS
-        ):
-
-            return (
-                CandidateStatus
-                .NOT_EVALUATED
-            )
-
-    return CandidateStatus.SURVIVOR
+    except Exception:
+        return None
 
 
-# ============================================================
-# STOP-AFTER-FIRST-FAILURE RULE
-# ============================================================
-
-def should_continue_after(
-    gate_result: GateResult,
-) -> bool:
-
-    return (
-        gate_result.status
-        == GateStatus.PASS
-    )
-
-
-# ============================================================
-# GATE 5 NEAR-MISS RECHECK PRICE
-# ============================================================
-
-def gate_5_recheck_price(
-    fair_value: float,
-    downside_value: float,
-    months_to_value: float,
-    minimum_annualized_return: float = 0.15,
-    minimum_reward_downside: float = 2.0,
-) -> Optional[dict]:
+def pct_change(current, prior):
 
     if (
-        fair_value is None
-        or downside_value is None
-        or months_to_value is None
-        or fair_value <= 0
-        or downside_value < 0
-        or months_to_value <= 0
+        current is None
+        or prior is None
+        or prior == 0
     ):
         return None
 
-    # Maximum price that satisfies
-    # the annualized-return hurdle.
+    return (
+        current / prior
+    ) - 1
 
-    return_price_limit = (
-        fair_value
-        /
-        (
-            1
-            + minimum_annualized_return
+
+# ============================================================
+# EXTRACT ONE TICKER SERIES
+# ============================================================
+
+def get_ticker_series(
+    data,
+    field,
+    ticker,
+):
+    """
+    Safely extract one field for one ticker from a
+    multi-ticker yfinance download.
+    """
+
+    try:
+
+        field_data = data[field]
+
+        if isinstance(
+            field_data,
+            pd.Series,
+        ):
+            return field_data.dropna()
+
+        if ticker not in field_data.columns:
+            return pd.Series(
+                dtype=float
+            )
+
+        return field_data[
+            ticker
+        ].dropna()
+
+    except Exception:
+
+        return pd.Series(
+            dtype=float
         )
-        ** (
-            months_to_value / 12
+
+
+# ============================================================
+# CALCULATE PER-TICKER METRICS
+# ============================================================
+
+def calculate_metrics(
+    ticker,
+    data,
+):
+
+    close = get_ticker_series(
+        data,
+        "Close",
+        ticker,
+    )
+
+    volume = get_ticker_series(
+        data,
+        "Volume",
+        ticker,
+    )
+
+    if len(close) < 30:
+        return None
+
+    current_price = safe_float(
+        close.iloc[-1]
+    )
+
+    if current_price is None:
+        return None
+
+    # --------------------------------------------------------
+    # RETURNS
+    # --------------------------------------------------------
+
+    return_1d = None
+    return_1m = None
+    return_3m = None
+    return_6m = None
+
+    if len(close) >= 2:
+
+        return_1d = pct_change(
+            current_price,
+            safe_float(
+                close.iloc[-2]
+            ),
         )
+
+    if len(close) >= 22:
+
+        return_1m = pct_change(
+            current_price,
+            safe_float(
+                close.iloc[-22]
+            ),
+        )
+
+    if len(close) >= 64:
+
+        return_3m = pct_change(
+            current_price,
+            safe_float(
+                close.iloc[-64]
+            ),
+        )
+
+    if len(close) >= 127:
+
+        return_6m = pct_change(
+            current_price,
+            safe_float(
+                close.iloc[-127]
+            ),
+        )
+
+    # --------------------------------------------------------
+    # 52-WEEK RANGE
+    # --------------------------------------------------------
+
+    high_52w = safe_float(
+        close.max()
     )
 
-    # Solve:
-    #
-    # (FV - P) / (P - D) >= R
-    #
-    # For R = required reward/downside.
-    #
-    # P <= (FV + R*D) / (1 + R)
-
-    asymmetry_price_limit = (
-        fair_value
-        + minimum_reward_downside
-        * downside_value
-    ) / (
-        1
-        + minimum_reward_downside
+    low_52w = safe_float(
+        close.min()
     )
 
-    qualifying_price = min(
-        return_price_limit,
-        asymmetry_price_limit,
-    )
+    drawdown_from_high = None
+    distance_from_low = None
 
-    binding_constraint = (
-        "annualized return"
-        if return_price_limit
-        <= asymmetry_price_limit
-        else "reward/downside"
-    )
+    if (
+        high_52w is not None
+        and high_52w > 0
+    ):
+
+        drawdown_from_high = (
+            current_price / high_52w
+        ) - 1
+
+    if (
+        low_52w is not None
+        and low_52w > 0
+    ):
+
+        distance_from_low = (
+            current_price / low_52w
+        ) - 1
+
+    # --------------------------------------------------------
+    # VOLUME RATIO
+    # --------------------------------------------------------
+
+    volume_ratio = None
+
+    if len(volume) >= 21:
+
+        current_volume = safe_float(
+            volume.iloc[-1]
+        )
+
+        average_volume = safe_float(
+            volume.iloc[-21:-1].mean()
+        )
+
+        if (
+            current_volume is not None
+            and average_volume is not None
+            and average_volume > 0
+        ):
+
+            volume_ratio = (
+                current_volume
+                / average_volume
+            )
 
     return {
-        "return_hurdle_price":
-            return_price_limit,
+        "last_price":
+            current_price,
 
-        "reward_downside_hurdle_price":
-            asymmetry_price_limit,
+        "return_1d":
+            return_1d,
 
-        "qualifying_price":
-            qualifying_price,
+        "return_1m":
+            return_1m,
 
-        "binding_constraint":
-            binding_constraint,
+        "return_3m":
+            return_3m,
+
+        "return_6m":
+            return_6m,
+
+        "drawdown_from_52w_high":
+            drawdown_from_high,
+
+        "distance_from_52w_low":
+            distance_from_low,
+
+        "volume_ratio":
+            volume_ratio,
     }
+
+
+# ============================================================
+# BUILD DISCOVERY SIGNALS
+# ============================================================
+
+def build_signals(metrics):
+    """
+    These signals explain why a security entered the
+    candidate pool.
+
+    They are NOT Gate 1 valuation evidence.
+    """
+
+    signals = []
+
+    r1d = metrics.get(
+        "return_1d"
+    )
+
+    r1m = metrics.get(
+        "return_1m"
+    )
+
+    r3m = metrics.get(
+        "return_3m"
+    )
+
+    r6m = metrics.get(
+        "return_6m"
+    )
+
+    drawdown = metrics.get(
+        "drawdown_from_52w_high"
+    )
+
+    low_distance = metrics.get(
+        "distance_from_52w_low"
+    )
+
+    volume_ratio = metrics.get(
+        "volume_ratio"
+    )
+
+    if (
+        r1d is not None
+        and r1d <= -0.05
+    ):
+        signals.append(
+            f"1-day decline {r1d:.1%}"
+        )
+
+    if (
+        r1m is not None
+        and r1m <= -0.10
+    ):
+        signals.append(
+            f"1-month decline {r1m:.1%}"
+        )
+
+    if (
+        r3m is not None
+        and r3m <= -0.15
+    ):
+        signals.append(
+            f"3-month decline {r3m:.1%}"
+        )
+
+    if (
+        r6m is not None
+        and r6m <= -0.20
+    ):
+        signals.append(
+            f"6-month decline {r6m:.1%}"
+        )
+
+    if (
+        drawdown is not None
+        and drawdown <= -0.25
+    ):
+        signals.append(
+            f"{abs(drawdown):.1%} below 52-week high"
+        )
+
+    if (
+        low_distance is not None
+        and low_distance <= 0.10
+    ):
+        signals.append(
+            f"within {low_distance:.1%} of 52-week low"
+        )
+
+    if (
+        volume_ratio is not None
+        and volume_ratio >= 1.75
+    ):
+        signals.append(
+            f"volume {volume_ratio:.1f}× recent average"
+        )
+
+    return signals
+
+
+# ============================================================
+# DISCOVERY SCORE
+# ============================================================
+
+def calculate_discovery_score(
+    metrics,
+):
+    """
+    Rank observable market dislocation.
+
+    This is ONLY a discovery score.
+
+    It is not a valuation score and must never be used
+    to pass an investment gate.
+    """
+
+    score = 0.0
+
+    r1d = metrics.get(
+        "return_1d"
+    )
+
+    r1m = metrics.get(
+        "return_1m"
+    )
+
+    r3m = metrics.get(
+        "return_3m"
+    )
+
+    r6m = metrics.get(
+        "return_6m"
+    )
+
+    drawdown = metrics.get(
+        "drawdown_from_52w_high"
+    )
+
+    low_distance = metrics.get(
+        "distance_from_52w_low"
+    )
+
+    volume_ratio = metrics.get(
+        "volume_ratio"
+    )
+
+    if r1d is not None:
+        score += (
+            max(
+                0,
+                -r1d,
+            )
+            * 150
+        )
+
+    if r1m is not None:
+        score += (
+            max(
+                0,
+                -r1m,
+            )
+            * 125
+        )
+
+    if r3m is not None:
+        score += (
+            max(
+                0,
+                -r3m,
+            )
+            * 100
+        )
+
+    if r6m is not None:
+        score += (
+            max(
+                0,
+                -r6m,
+            )
+            * 75
+        )
+
+    if drawdown is not None:
+        score += (
+            max(
+                0,
+                -drawdown,
+            )
+            * 75
+        )
+
+    if (
+        low_distance is not None
+        and low_distance >= 0
+    ):
+
+        score += (
+            max(
+                0,
+                0.20 - low_distance,
+            )
+            * 50
+        )
+
+    if (
+        volume_ratio is not None
+        and volume_ratio > 1
+    ):
+
+        score += (
+            min(
+                volume_ratio - 1,
+                3,
+            )
+            * 2
+        )
+
+    return float(score)
+
+
+# ============================================================
+# ENTRY REASON
+# ============================================================
+
+def build_entry_reason(
+    signals,
+):
+
+    if not signals:
+
+        return (
+            "Entered because current market data showed "
+            "an elevated dislocation score."
+        )
+
+    strongest = signals[:3]
+
+    return (
+        "Entered the screen because of current market "
+        "dislocation: "
+        + "; ".join(strongest)
+        + "."
+    )
+
+
+# ============================================================
+# DISCOVER AND FREEZE CANDIDATES
+# ============================================================
+
+def discover_candidates(
+    target_count=12,
+):
+    """
+    Discover candidates before any investment gates run.
+
+    The returned list is frozen.
+
+    No replacement candidates should be added after seeing
+    which securities fail later gates.
+    """
+
+    retrieved_at = datetime.now(
+        timezone.utc
+    )
+
+    universe = (
+        build_discovery_universe()
+    )
+
+    tickers = list(
+        universe.keys()
+    )
+
+    history = download_history(
+        tickers
+    )
+
+    candidates = []
+
+    for ticker in tickers:
+
+        metrics = calculate_metrics(
+            ticker,
+            history,
+        )
+
+        if metrics is None:
+            continue
+
+        signals = build_signals(
+            metrics
+        )
+
+        if not signals:
+            continue
+
+        discovery_score = (
+            calculate_discovery_score(
+                metrics
+            )
+        )
+
+        candidate = DiscoveredCandidate(
+            ticker=ticker,
+
+            company=universe[
+                ticker
+            ],
+
+            entry_reason=(
+                build_entry_reason(
+                    signals
+                )
+            ),
+
+            last_price=metrics[
+                "last_price"
+            ],
+
+            return_1d=metrics[
+                "return_1d"
+            ],
+
+            return_1m=metrics[
+                "return_1m"
+            ],
+
+            return_3m=metrics[
+                "return_3m"
+            ],
+
+            return_6m=metrics[
+                "return_6m"
+            ],
+
+            drawdown_from_52w_high=(
+                metrics[
+                    "drawdown_from_52w_high"
+                ]
+            ),
+
+            distance_from_52w_low=(
+                metrics[
+                    "distance_from_52w_low"
+                ]
+            ),
+
+            volume_ratio=metrics[
+                "volume_ratio"
+            ],
+
+            discovery_score=(
+                discovery_score
+            ),
+
+            discovery_source=(
+                "Yahoo Finance daily market data; "
+                "current S&P 500 constituent list "
+                "retrieved from Wikipedia"
+            ),
+
+            retrieved_at=(
+                retrieved_at
+            ),
+
+            signals=signals,
+        )
+
+        candidates.append(
+            candidate
+        )
+
+    # --------------------------------------------------------
+    # RANK BEFORE GATING
+    # --------------------------------------------------------
+
+    candidates.sort(
+        key=lambda candidate: (
+            candidate.discovery_score
+            if candidate.discovery_score
+            is not None
+            else -999
+        ),
+        reverse=True,
+    )
+
+    # --------------------------------------------------------
+    # FREEZE
+    # --------------------------------------------------------
+
+    frozen_candidates = (
+        candidates[:target_count]
+    )
+
+    return frozen_candidates
