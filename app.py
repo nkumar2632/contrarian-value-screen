@@ -21,9 +21,9 @@ st.set_page_config(
 # ============================================================
 
 @st.cache_data(ttl=1800)
-def get_frozen_candidates():
+def get_discovery_result():
     """
-    Discover, eligibility-screen, and freeze the candidate list.
+    Discover, eligibility-screen, audit, and freeze candidates.
 
     Cached for 30 minutes so routine Streamlit reruns
     do not silently change the frozen list.
@@ -56,10 +56,35 @@ def format_market_cap(value):
         return "N/A"
 
     if value >= 1_000_000_000:
-        return f"${value / 1_000_000_000:.1f}B"
+        return (
+            f"${value / 1_000_000_000:.1f}B"
+        )
 
     if value >= 1_000_000:
-        return f"${value / 1_000_000:.1f}M"
+        return (
+            f"${value / 1_000_000:.1f}M"
+        )
+
+    return f"${value:,.0f}"
+
+
+def format_large_money(value):
+    if value is None:
+        return "N/A"
+
+    absolute_value = abs(
+        value
+    )
+
+    if absolute_value >= 1_000_000_000:
+        return (
+            f"${value / 1_000_000_000:.2f}B"
+        )
+
+    if absolute_value >= 1_000_000:
+        return (
+            f"${value / 1_000_000:.2f}M"
+        )
 
     return f"${value:,.0f}"
 
@@ -87,7 +112,7 @@ def format_profitability(value):
     if value is False:
         return "Negative"
 
-    return "Not applicable"
+    return "Unavailable / N/A"
 
 
 # ============================================================
@@ -148,7 +173,7 @@ st.title(
 )
 
 st.caption(
-    "v6.3.1 — live candidate discovery + eligibility"
+    "v6.3.1 — live discovery + eligibility audit"
 )
 
 st.warning(
@@ -160,15 +185,17 @@ st.warning(
 
 
 # ============================================================
-# DISCOVER / FREEZE
+# DISCOVER / AUDIT / FREEZE
 # ============================================================
 
 with st.spinner(
-    "Scanning current large-cap market dislocations "
-    "and checking eligibility..."
+    "Scanning market dislocations and checking eligibility..."
 ):
 
-    candidates = get_frozen_candidates()
+    (
+        candidates,
+        eligibility_audit,
+    ) = get_discovery_result()
 
 
 # ============================================================
@@ -178,13 +205,13 @@ with st.spinner(
 col1, col2, col3 = st.columns(3)
 
 col1.metric(
-    "Frozen Candidates",
+    "Frozen",
     len(candidates),
 )
 
 col2.metric(
-    "Target",
-    12,
+    "Eligibility Checked",
+    len(eligibility_audit),
 )
 
 col3.metric(
@@ -202,7 +229,7 @@ if st.button(
     use_container_width=True,
 ):
 
-    get_frozen_candidates.clear()
+    get_discovery_result.clear()
     retrieve_price.clear()
 
     st.rerun()
@@ -215,12 +242,153 @@ if st.button(
 st.info(
     "Current discovery universe: S&P 500 constituents plus "
     "major unleveraged U.S.-listed ETFs. Stock candidates "
-    "must also satisfy the approximately $10B market-cap and "
+    "must satisfy the approximately $10B market-cap and "
     "profitability eligibility requirements before the final "
-    "candidate list is frozen. This is a reproducible "
-    "large-cap universe and is not represented as a full "
-    "U.S.-market screen."
+    "candidate list is frozen. This is not represented as a "
+    "full U.S.-market screen."
 )
+
+
+# ============================================================
+# ELIGIBILITY AUDIT
+# ============================================================
+
+st.divider()
+
+st.header(
+    "Eligibility Audit"
+)
+
+st.caption(
+    "Candidates are shown in original dislocation-score order. "
+    "Every security examined before the 12-name list was "
+    "completed appears here."
+)
+
+
+accepted_count = sum(
+    1
+    for item in eligibility_audit
+    if item.eligible
+)
+
+rejected_count = (
+    len(eligibility_audit)
+    - accepted_count
+)
+
+
+audit_col1, audit_col2, audit_col3 = (
+    st.columns(3)
+)
+
+audit_col1.metric(
+    "Examined",
+    len(eligibility_audit),
+)
+
+audit_col2.metric(
+    "Eligible",
+    accepted_count,
+)
+
+audit_col3.metric(
+    "Not Included",
+    rejected_count,
+)
+
+
+with st.expander(
+    "Show full eligibility audit",
+    expanded=False,
+):
+
+    for item in eligibility_audit:
+
+        st.markdown(
+            f"### #{item.discovery_rank} — {item.ticker}"
+        )
+
+        st.caption(
+            item.company
+        )
+
+        if item.eligible:
+
+            st.success(
+                "ELIGIBLE — included in frozen list"
+            )
+
+        elif (
+            item.eligibility_status
+            == "DATA INSUFFICIENT"
+        ):
+
+            st.warning(
+                "DATA INSUFFICIENT — not included"
+            )
+
+        else:
+
+            st.error(
+                "INELIGIBLE — not included"
+            )
+
+        audit_metric_1, audit_metric_2 = (
+            st.columns(2)
+        )
+
+        audit_metric_1.metric(
+            "Market Cap",
+            format_market_cap(
+                item.market_cap
+            ),
+        )
+
+        audit_metric_2.metric(
+            "Profitability",
+            format_profitability(
+                item.profitable
+            ),
+        )
+
+        st.write(
+            "**Reason:** "
+            f"{item.eligibility_reason}"
+        )
+
+        st.write(
+            "**Security type:** "
+            f"{item.security_type}"
+        )
+
+        if item.net_income is not None:
+
+            st.write(
+                "**Retrieved annual net income:** "
+                f"{format_large_money(item.net_income)}"
+            )
+
+        st.write(
+            "**Eligibility source:** "
+            f"{item.eligibility_source}"
+        )
+
+        st.write(
+            "**Eligibility retrieved:** "
+            f"{format_datetime(item.eligibility_retrieved_at)}"
+        )
+
+        st.write(
+            "**Discovery score:** "
+            f"{item.discovery_score:.2f}"
+        )
+
+        st.caption(
+            item.entry_reason
+        )
+
+        st.divider()
 
 
 # ============================================================
@@ -243,9 +411,9 @@ if not candidates:
 else:
 
     st.caption(
-        "This list is frozen before investment gating. "
-        "No replacement candidates will be added after "
-        "Gate 1 begins."
+        "The following list is now frozen before investment "
+        "gating. No replacement candidates will be added "
+        "after Gate 1 begins."
     )
 
     for rank, candidate in enumerate(
@@ -421,9 +589,8 @@ else:
 
                 st.caption(
                     "Eligibility determines whether a security "
-                    "may enter the frozen candidate list. It is "
-                    "not an investment gate and does not establish "
-                    "that the security is undervalued."
+                    "may enter the frozen candidate list. It "
+                    "does not establish undervaluation."
                 )
 
                 st.markdown(
@@ -446,9 +613,9 @@ else:
                 )
 
                 st.caption(
-                    "Discovery score ranks market dislocation only. "
-                    "It is not a valuation score and is not used to "
-                    "pass Gate 1."
+                    "Discovery score ranks market dislocation "
+                    "only. It is not a valuation score and "
+                    "cannot pass Gate 1."
                 )
 
 
@@ -463,9 +630,9 @@ st.header(
 )
 
 st.write(
-    "No investment-gate data-insufficiency determination "
-    "has been made yet. The formal retrieval protocol begins "
-    "with Gate 1."
+    "Eligibility data insufficiency is shown in the audit "
+    "above. Formal investment-gate data insufficiency will "
+    "begin with Gate 1."
 )
 
 
@@ -480,7 +647,8 @@ st.header(
 )
 
 st.write(
-    "No candidates have been gated yet."
+    "No candidates have been evaluated by an investment "
+    "gate yet."
 )
 
 
@@ -551,6 +719,7 @@ st.write(
 st.divider()
 
 st.caption(
-    "Development build — live discovery and eligibility "
-    "layers active; investment gates not yet connected."
+    "Development build — live discovery and audited "
+    "eligibility layers active; investment gates not yet "
+    "connected."
 )
