@@ -760,19 +760,52 @@ def build_ranked_dislocation_pool():
 # ============================================================
 
 def discover_candidates(
+    # ============================================================
+# ELIGIBILITY AUDIT RESULT
+# ============================================================
+
+@dataclass
+class EligibilityAuditItem:
+    discovery_rank: int
+    ticker: str
+    company: str
+
+    discovery_score: Optional[float]
+    entry_reason: str
+
+    eligibility_status: str
+    eligible: bool
+    eligibility_reason: str
+
+    security_type: str
+    market_cap: Optional[float]
+    profitable: Optional[bool]
+    net_income: Optional[float]
+
+    eligibility_source: str
+    eligibility_retrieved_at: datetime
+
+
+# ============================================================
+# ELIGIBILITY + FREEZE
+# ============================================================
+
+def discover_candidates(
     target_count=12,
 ):
     """
-    v6.3.1 sequence:
+    v6.3.1 discovery sequence:
 
-    1. Find current dislocations.
-    2. Rank the discovery pool.
-    3. Apply basic universe eligibility.
-    4. Freeze the first eligible candidates.
-    5. Do not add replacements after investment gating begins.
+    1. Find observable current market dislocations.
+    2. Rank the dislocation pool.
+    3. Evaluate eligibility in ranked order.
+    4. Record every eligibility decision.
+    5. Freeze the first target_count eligible securities.
+    6. Stop adding names once the frozen list is complete.
 
-    Eligibility is therefore resolved before the candidate
-    list is frozen.
+    Returns:
+        frozen_candidates
+        eligibility_audit
     """
 
     ranked_pool = (
@@ -780,8 +813,12 @@ def discover_candidates(
     )
 
     frozen_candidates = []
+    eligibility_audit = []
 
-    for item in ranked_pool:
+    for discovery_rank, item in enumerate(
+        ranked_pool,
+        start=1,
+    ):
 
         if (
             len(frozen_candidates)
@@ -799,6 +836,68 @@ def discover_candidates(
             )
         )
 
+        entry_reason = (
+            build_entry_reason(
+                item["signals"]
+            )
+        )
+
+        audit_item = EligibilityAuditItem(
+            discovery_rank=discovery_rank,
+
+            ticker=ticker,
+
+            company=item[
+                "company"
+            ],
+
+            discovery_score=item[
+                "score"
+            ],
+
+            entry_reason=entry_reason,
+
+            eligibility_status=(
+                eligibility.status
+            ),
+
+            eligible=(
+                eligibility.eligible
+            ),
+
+            eligibility_reason=(
+                eligibility.reason
+            ),
+
+            security_type=(
+                eligibility.security_type
+            ),
+
+            market_cap=(
+                eligibility.market_cap
+            ),
+
+            profitable=(
+                eligibility.profitable
+            ),
+
+            net_income=(
+                eligibility.net_income
+            ),
+
+            eligibility_source=(
+                eligibility.source
+            ),
+
+            eligibility_retrieved_at=(
+                eligibility.retrieved_at
+            ),
+        )
+
+        eligibility_audit.append(
+            audit_item
+        )
+
         if not eligibility.eligible:
             continue
 
@@ -813,11 +912,7 @@ def discover_candidates(
                 "company"
             ],
 
-            entry_reason=(
-                build_entry_reason(
-                    item["signals"]
-                )
-            ),
+            entry_reason=entry_reason,
 
             last_price=metrics[
                 "last_price"
@@ -879,7 +974,7 @@ def discover_candidates(
                 "Yahoo Finance daily market data; "
                 "S&P 500 constituent list retrieved with "
                 "requests and parsed locally; eligibility "
-                "checked before final list freeze"
+                "evaluated before final candidate freeze"
             ),
 
             retrieved_at=item[
@@ -895,4 +990,7 @@ def discover_candidates(
             candidate
         )
 
-    return frozen_candidates
+    return (
+        frozen_candidates,
+        eligibility_audit,
+    )
