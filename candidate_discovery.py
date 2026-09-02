@@ -7,6 +7,8 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from eligibility import evaluate_eligibility
+
 
 # ============================================================
 # DISCOVERY RESULT
@@ -30,6 +32,11 @@ class DiscoveredCandidate:
 
     volume_ratio: Optional[float]
     discovery_score: Optional[float]
+
+    eligibility_status: str
+    eligibility_reason: str
+    market_cap: Optional[float]
+    profitable: Optional[bool]
 
     discovery_source: str
     retrieved_at: datetime
@@ -68,11 +75,8 @@ def get_sp500_universe():
     """
     Retrieve the current S&P 500 constituent list.
 
-    Important:
     requests retrieves the page.
     pandas only parses the already-downloaded HTML.
-
-    This avoids pandas/urllib making the HTTP request itself.
     """
 
     url = (
@@ -98,10 +102,10 @@ def get_sp500_universe():
 
     response.raise_for_status()
 
-    html_text = response.text
-
     tables = pd.read_html(
-        io.StringIO(html_text)
+        io.StringIO(
+            response.text
+        )
     )
 
     if not tables:
@@ -120,7 +124,7 @@ def get_sp500_universe():
         set(table.columns)
     ):
         raise RuntimeError(
-            "The S&P 500 table does not contain "
+            "The S&P 500 source did not contain "
             "the expected Symbol and Security columns."
         )
 
@@ -157,10 +161,6 @@ def get_sp500_universe():
 # ============================================================
 
 def build_discovery_universe():
-    """
-    Build the discovery universe before any investment
-    gate is evaluated.
-    """
 
     universe = get_sp500_universe()
 
@@ -175,13 +175,10 @@ def build_discovery_universe():
 # ============================================================
 
 def download_history(tickers):
-    """
-    Download approximately one year of daily market history.
 
-    This data is used only for candidate discovery signals.
-    """
-
-    ticker_list = list(tickers)
+    ticker_list = list(
+        tickers
+    )
 
     if not ticker_list:
         raise RuntimeError(
@@ -211,7 +208,9 @@ def download_history(tickers):
 # ============================================================
 
 def safe_float(value):
+
     try:
+
         if pd.isna(value):
             return None
 
@@ -221,7 +220,11 @@ def safe_float(value):
         return None
 
 
-def pct_change(current, prior):
+def pct_change(
+    current,
+    prior,
+):
+
     if (
         current is None
         or prior is None
@@ -243,13 +246,12 @@ def get_ticker_series(
     field,
     ticker,
 ):
-    """
-    Safely extract a single field for a single ticker
-    from a multi-ticker yfinance download.
-    """
 
     try:
-        field_data = data[field]
+
+        field_data = data[
+            field
+        ]
 
         if isinstance(
             field_data,
@@ -267,6 +269,7 @@ def get_ticker_series(
         ].dropna()
 
     except Exception:
+
         return pd.Series(
             dtype=float
         )
@@ -280,6 +283,7 @@ def calculate_metrics(
     ticker,
     data,
 ):
+
     close = get_ticker_series(
         data,
         "Close",
@@ -308,6 +312,7 @@ def calculate_metrics(
     return_6m = None
 
     if len(close) >= 2:
+
         return_1d = pct_change(
             current_price,
             safe_float(
@@ -316,6 +321,7 @@ def calculate_metrics(
         )
 
     if len(close) >= 22:
+
         return_1m = pct_change(
             current_price,
             safe_float(
@@ -324,6 +330,7 @@ def calculate_metrics(
         )
 
     if len(close) >= 64:
+
         return_3m = pct_change(
             current_price,
             safe_float(
@@ -332,6 +339,7 @@ def calculate_metrics(
         )
 
     if len(close) >= 127:
+
         return_6m = pct_change(
             current_price,
             safe_float(
@@ -354,6 +362,7 @@ def calculate_metrics(
         high_52w is not None
         and high_52w > 0
     ):
+
         drawdown_from_high = (
             current_price / high_52w
         ) - 1
@@ -362,6 +371,7 @@ def calculate_metrics(
         low_52w is not None
         and low_52w > 0
     ):
+
         distance_from_low = (
             current_price / low_52w
         ) - 1
@@ -369,6 +379,7 @@ def calculate_metrics(
     volume_ratio = None
 
     if len(volume) >= 21:
+
         current_volume = safe_float(
             volume.iloc[-1]
         )
@@ -382,6 +393,7 @@ def calculate_metrics(
             and average_volume is not None
             and average_volume > 0
         ):
+
             volume_ratio = (
                 current_volume
                 / average_volume
@@ -418,13 +430,9 @@ def calculate_metrics(
 # BUILD DISCOVERY SIGNALS
 # ============================================================
 
-def build_signals(metrics):
-    """
-    These signals explain why a security entered the
-    candidate pool.
-
-    They are not valuation evidence and cannot pass Gate 1.
-    """
+def build_signals(
+    metrics,
+):
 
     signals = []
 
@@ -460,6 +468,7 @@ def build_signals(metrics):
         r1d is not None
         and r1d <= -0.05
     ):
+
         signals.append(
             f"1-day decline {r1d:.1%}"
         )
@@ -468,6 +477,7 @@ def build_signals(metrics):
         r1m is not None
         and r1m <= -0.10
     ):
+
         signals.append(
             f"1-month decline {r1m:.1%}"
         )
@@ -476,6 +486,7 @@ def build_signals(metrics):
         r3m is not None
         and r3m <= -0.15
     ):
+
         signals.append(
             f"3-month decline {r3m:.1%}"
         )
@@ -484,6 +495,7 @@ def build_signals(metrics):
         r6m is not None
         and r6m <= -0.20
     ):
+
         signals.append(
             f"6-month decline {r6m:.1%}"
         )
@@ -492,6 +504,7 @@ def build_signals(metrics):
         drawdown is not None
         and drawdown <= -0.25
     ):
+
         signals.append(
             f"{abs(drawdown):.1%} below 52-week high"
         )
@@ -500,6 +513,7 @@ def build_signals(metrics):
         low_distance is not None
         and low_distance <= 0.10
     ):
+
         signals.append(
             f"within {low_distance:.1%} of 52-week low"
         )
@@ -508,6 +522,7 @@ def build_signals(metrics):
         volume_ratio is not None
         and volume_ratio >= 1.75
     ):
+
         signals.append(
             f"volume {volume_ratio:.1f}× recent average"
         )
@@ -522,11 +537,6 @@ def build_signals(metrics):
 def calculate_discovery_score(
     metrics,
 ):
-    """
-    Higher score means a larger observable market dislocation.
-
-    This is only a candidate-ranking mechanism.
-    """
 
     score = 0.0
 
@@ -559,6 +569,7 @@ def calculate_discovery_score(
     )
 
     if r1d is not None:
+
         score += (
             max(
                 0,
@@ -568,6 +579,7 @@ def calculate_discovery_score(
         )
 
     if r1m is not None:
+
         score += (
             max(
                 0,
@@ -577,6 +589,7 @@ def calculate_discovery_score(
         )
 
     if r3m is not None:
+
         score += (
             max(
                 0,
@@ -586,6 +599,7 @@ def calculate_discovery_score(
         )
 
     if r6m is not None:
+
         score += (
             max(
                 0,
@@ -595,6 +609,7 @@ def calculate_discovery_score(
         )
 
     if drawdown is not None:
+
         score += (
             max(
                 0,
@@ -607,6 +622,7 @@ def calculate_discovery_score(
         low_distance is not None
         and low_distance >= 0
     ):
+
         score += (
             max(
                 0,
@@ -619,6 +635,7 @@ def calculate_discovery_score(
         volume_ratio is not None
         and volume_ratio > 1
     ):
+
         score += (
             min(
                 volume_ratio - 1,
@@ -639,38 +656,34 @@ def calculate_discovery_score(
 def build_entry_reason(
     signals,
 ):
+
     if not signals:
+
         return (
             "Entered because current market data showed "
             "an elevated dislocation score."
         )
 
-    strongest = signals[:3]
-
     return (
         "Entered the screen because of current market "
         "dislocation: "
         + "; ".join(
-            strongest
+            signals[:3]
         )
         + "."
     )
 
 
 # ============================================================
-# DISCOVER AND FREEZE CANDIDATES
+# DISCOVER CANDIDATE POOL
 # ============================================================
 
-def discover_candidates(
-    target_count=12,
-):
+def build_ranked_dislocation_pool():
     """
-    Discover candidates before any investment gate runs.
+    Build and rank the dislocation pool before eligibility
+    screening.
 
-    The returned candidate list is frozen.
-
-    No replacement candidates should be added after later
-    gate failures.
+    This does NOT freeze the final candidate list yet.
     """
 
     retrieved_at = datetime.now(
@@ -687,7 +700,7 @@ def discover_candidates(
         tickers
     )
 
-    candidates = []
+    pool = []
 
     for ticker in tickers:
 
@@ -706,22 +719,103 @@ def discover_candidates(
         if not signals:
             continue
 
-        discovery_score = (
-            calculate_discovery_score(
-                metrics
+        score = calculate_discovery_score(
+            metrics
+        )
+
+        pool.append(
+            {
+                "ticker":
+                    ticker,
+
+                "company":
+                    universe[ticker],
+
+                "metrics":
+                    metrics,
+
+                "signals":
+                    signals,
+
+                "score":
+                    score,
+
+                "retrieved_at":
+                    retrieved_at,
+            }
+        )
+
+    pool.sort(
+        key=lambda item: (
+            item["score"]
+        ),
+        reverse=True,
+    )
+
+    return pool
+
+
+# ============================================================
+# ELIGIBILITY + FREEZE
+# ============================================================
+
+def discover_candidates(
+    target_count=12,
+):
+    """
+    v6.3.1 sequence:
+
+    1. Find current dislocations.
+    2. Rank the discovery pool.
+    3. Apply basic universe eligibility.
+    4. Freeze the first eligible candidates.
+    5. Do not add replacements after investment gating begins.
+
+    Eligibility is therefore resolved before the candidate
+    list is frozen.
+    """
+
+    ranked_pool = (
+        build_ranked_dislocation_pool()
+    )
+
+    frozen_candidates = []
+
+    for item in ranked_pool:
+
+        if (
+            len(frozen_candidates)
+            >= target_count
+        ):
+            break
+
+        ticker = item[
+            "ticker"
+        ]
+
+        eligibility = (
+            evaluate_eligibility(
+                ticker
             )
         )
+
+        if not eligibility.eligible:
+            continue
+
+        metrics = item[
+            "metrics"
+        ]
 
         candidate = DiscoveredCandidate(
             ticker=ticker,
 
-            company=universe[
-                ticker
+            company=item[
+                "company"
             ],
 
             entry_reason=(
                 build_entry_reason(
-                    signals
+                    item["signals"]
                 )
             ),
 
@@ -761,39 +855,44 @@ def discover_candidates(
                 "volume_ratio"
             ],
 
-            discovery_score=(
-                discovery_score
+            discovery_score=item[
+                "score"
+            ],
+
+            eligibility_status=(
+                eligibility.status
+            ),
+
+            eligibility_reason=(
+                eligibility.reason
+            ),
+
+            market_cap=(
+                eligibility.market_cap
+            ),
+
+            profitable=(
+                eligibility.profitable
             ),
 
             discovery_source=(
                 "Yahoo Finance daily market data; "
-                "S&P 500 constituent list retrieved "
-                "with requests and parsed locally"
+                "S&P 500 constituent list retrieved with "
+                "requests and parsed locally; eligibility "
+                "checked before final list freeze"
             ),
 
-            retrieved_at=(
-                retrieved_at
-            ),
+            retrieved_at=item[
+                "retrieved_at"
+            ],
 
-            signals=signals,
+            signals=item[
+                "signals"
+            ],
         )
 
-        candidates.append(
+        frozen_candidates.append(
             candidate
         )
-
-    candidates.sort(
-        key=lambda candidate: (
-            candidate.discovery_score
-            if candidate.discovery_score
-            is not None
-            else -999
-        ),
-        reverse=True,
-    )
-
-    frozen_candidates = (
-        candidates[:target_count]
-    )
 
     return frozen_candidates
