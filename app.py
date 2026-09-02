@@ -1,5 +1,7 @@
 import streamlit as st
 
+from data_sources import get_yahoo_price
+
 from screening_engine import (
     Gate1Input,
     Gate2Input,
@@ -32,24 +34,46 @@ st.set_page_config(
 
 
 # ============================================================
-# SAMPLE DEVELOPMENT DATA
+# LIVE PRICE CACHE
 # ============================================================
 
-# These are placeholder inputs to test the v6.3.1 engine.
-# They are NOT live market data and NOT investment conclusions.
+@st.cache_data(ttl=300)
+def retrieve_price(ticker):
+    """
+    Cache live market retrieval for 5 minutes so Streamlit
+    reruns do not repeatedly query the source.
+    """
+    return get_yahoo_price(ticker)
+
+
+# ============================================================
+# DEVELOPMENT SCREEN DATA
+# ============================================================
+
+# IMPORTANT:
+#
+# Current prices are retrieved live.
+#
+# Gate 1–4 evidence and Gate 5 valuation assumptions below
+# remain DEVELOPMENT FIXTURES. They are not yet based on the
+# complete live v6.3.1 research workflow.
 
 screen_data = {
-    "run_date": "2026-09-01",
     "candidates": [
         {
             "ticker": "CMCSA",
             "company": "Comcast",
 
+            "entry_reason": (
+                "Development candidate used to test the "
+                "v6.3.1 screening workflow."
+            ),
+
             "gate1": Gate1Input(
                 valuation_method_1="Forward P/E vs own history",
-                valuation_result_1="Appears discounted",
+                valuation_result_1="Development fixture: discounted",
                 valuation_method_2="FCF yield vs peers",
-                valuation_result_2="Appears discounted",
+                valuation_result_2="Development fixture: discounted",
                 check_1_supports_undervaluation=True,
                 check_2_supports_undervaluation=True,
                 methods_materially_contradict=False,
@@ -57,21 +81,21 @@ screen_data = {
 
             "gate2": Gate2Input(
                 mispricing_mechanism=(
-                    "Market may be extrapolating broadband weakness "
-                    "too aggressively."
+                    "Development fixture: market may be extrapolating "
+                    "broadband weakness too aggressively."
                 ),
                 economic_explanation=(
                     "If subscriber losses stabilize while free cash "
-                    "flow remains resilient, current valuation may "
-                    "understate normalized economics."
+                    "flow remains resilient, normalized economics "
+                    "could be stronger than implied."
                 ),
                 mechanism_supported=True,
             ),
 
             "gate3": Gate3Input(
                 strongest_bear_case=(
-                    "Broadband may be in structural decline because "
-                    "of fixed-wireless competition."
+                    "Broadband could face structural deterioration "
+                    "from fixed-wireless competition."
                 ),
                 structural_impairment_sufficient=False,
                 unresolved_structural_risks=[
@@ -86,36 +110,35 @@ screen_data = {
                     "free cash flow."
                 ),
                 economic_link=(
-                    "Stabilization could improve earnings durability "
-                    "and investor expectations."
+                    "Improved operating durability could affect "
+                    "earnings expectations and valuation."
                 ),
                 timing_months=12,
                 catalyst_supported=True,
             ),
 
             "gate5": Gate5Input(
-                current_price=31.20,
+                current_price=None,
                 base_operating_assumption=(
-                    "Free cash flow remains resilient while broadband "
-                    "trends stabilize."
+                    "Development fixture: free cash flow remains "
+                    "resilient while broadband trends stabilize."
                 ),
                 fair_value_low=39.00,
                 fair_value_high=43.00,
                 conservative_fair_value=39.00,
                 fair_value_basis=(
-                    "Conservative end of reasonable normalized "
+                    "Development fixture: conservative normalized "
                     "valuation range."
                 ),
                 adverse_operating_assumption=(
-                    "Broadband losses remain elevated and valuation "
-                    "compresses."
+                    "Broadband weakness persists and normalized "
+                    "valuation remains depressed."
                 ),
                 downside_low=25.00,
                 downside_high=28.00,
                 conservative_downside=25.00,
                 downside_basis=(
-                    "Conservative valuation under continued "
-                    "operating weakness."
+                    "Development fixture: adverse operating scenario."
                 ),
                 months_to_value=12,
             ),
@@ -125,11 +148,16 @@ screen_data = {
             "ticker": "PYPL",
             "company": "PayPal",
 
+            "entry_reason": (
+                "Development candidate used to test the "
+                "v6.3.1 screening workflow."
+            ),
+
             "gate1": Gate1Input(
                 valuation_method_1="Forward P/E vs own history",
-                valuation_result_1="Appears discounted",
-                valuation_method_2="FCF yield",
-                valuation_result_2="Appears discounted",
+                valuation_result_1="Development fixture: discounted",
+                valuation_method_2="Free-cash-flow yield",
+                valuation_result_2="Development fixture: discounted",
                 check_1_supports_undervaluation=True,
                 check_2_supports_undervaluation=True,
                 methods_materially_contradict=False,
@@ -137,19 +165,19 @@ screen_data = {
 
             "gate2": Gate2Input(
                 mispricing_mechanism=(
-                    "Market may be over-discounting slower branded "
-                    "checkout growth."
+                    "Development fixture: market may be "
+                    "over-discounting slower branded checkout growth."
                 ),
                 economic_explanation=(
                     "Margin improvement and execution could produce "
-                    "better earnings growth than currently expected."
+                    "better normalized economics than implied."
                 ),
                 mechanism_supported=True,
             ),
 
             "gate3": Gate3Input(
                 strongest_bear_case=(
-                    "Competitive pressure may represent a permanent "
+                    "Competitive pressure may represent permanent "
                     "erosion of PayPal's economics."
                 ),
                 structural_impairment_sufficient=False,
@@ -161,28 +189,29 @@ screen_data = {
 
             "gate4": Gate4Input(
                 catalyst=(
-                    "Margin improvement and renewed branded checkout "
-                    "growth."
+                    "Margin improvement and renewed branded "
+                    "checkout growth."
                 ),
                 economic_link=(
-                    "Improved growth and margins would raise normalized "
-                    "earnings and cash flow."
+                    "Better growth and margins would increase "
+                    "normalized earnings and cash flow."
                 ),
                 timing_months=12,
                 catalyst_supported=True,
             ),
 
             "gate5": Gate5Input(
-                current_price=61.00,
+                current_price=None,
                 base_operating_assumption=(
-                    "Margins improve and branded checkout growth "
-                    "stabilizes."
+                    "Development fixture: margins improve and "
+                    "branded checkout growth stabilizes."
                 ),
                 fair_value_low=75.00,
                 fair_value_high=82.00,
                 conservative_fair_value=75.00,
                 fair_value_basis=(
-                    "Conservative normalized earnings valuation."
+                    "Development fixture: normalized earnings "
+                    "valuation range."
                 ),
                 adverse_operating_assumption=(
                     "Growth remains weak and competitive pressure "
@@ -192,8 +221,8 @@ screen_data = {
                 downside_high=54.00,
                 conservative_downside=50.00,
                 downside_basis=(
-                    "Lower normalized valuation under sustained "
-                    "competitive pressure."
+                    "Development fixture: adverse competitive "
+                    "scenario."
                 ),
                 months_to_value=12,
             ),
@@ -203,11 +232,16 @@ screen_data = {
             "ticker": "ADBE",
             "company": "Adobe",
 
+            "entry_reason": (
+                "Development candidate used to test the "
+                "v6.3.1 screening workflow."
+            ),
+
             "gate1": Gate1Input(
                 valuation_method_1="Forward P/E vs own history",
-                valuation_result_1="Appears discounted",
-                valuation_method_2="FCF yield",
-                valuation_result_2="Appears discounted",
+                valuation_result_1="Development fixture: discounted",
+                valuation_method_2="Free-cash-flow yield",
+                valuation_result_2="Development fixture: discounted",
                 check_1_supports_undervaluation=True,
                 check_2_supports_undervaluation=True,
                 methods_materially_contradict=False,
@@ -215,13 +249,13 @@ screen_data = {
 
             "gate2": Gate2Input(
                 mispricing_mechanism=(
-                    "Market may be pricing excessive disruption from "
-                    "generative AI."
+                    "Development fixture: market may be pricing "
+                    "excessive disruption from generative AI."
                 ),
                 economic_explanation=(
                     "If Adobe monetizes AI while protecting its "
-                    "installed base, current expectations may prove "
-                    "too pessimistic."
+                    "installed base, current expectations could "
+                    "prove too pessimistic."
                 ),
                 mechanism_supported=True,
             ),
@@ -240,48 +274,49 @@ screen_data = {
 
             "gate4": Gate4Input(
                 catalyst=(
-                    "AI monetization and stabilization of Creative "
-                    "Cloud growth."
+                    "AI monetization and stabilization of "
+                    "Creative Cloud growth."
                 ),
                 economic_link=(
-                    "Successful AI monetization could support earnings "
-                    "growth and improve investor expectations."
+                    "Successful monetization could improve earnings "
+                    "growth and investor expectations."
                 ),
                 timing_months=12,
                 catalyst_supported=True,
             ),
 
             "gate5": Gate5Input(
-                current_price=291.52,
+                current_price=None,
                 base_operating_assumption=(
-                    "Creative Cloud growth stabilizes and AI products "
-                    "contribute incrementally."
+                    "Development fixture: Creative Cloud growth "
+                    "stabilizes and AI contributes incrementally."
                 ),
                 fair_value_low=337.00,
                 fair_value_high=360.00,
                 conservative_fair_value=337.00,
                 fair_value_basis=(
-                    "Conservative normalized earnings valuation."
+                    "Development fixture: normalized earnings "
+                    "valuation range."
                 ),
                 adverse_operating_assumption=(
-                    "AI competition pressures growth and multiple."
+                    "AI competition pressures growth and valuation."
                 ),
                 downside_low=200.00,
                 downside_high=225.00,
                 conservative_downside=200.00,
                 downside_basis=(
-                    "Lower earnings expectations and compressed "
-                    "valuation under structural AI pressure."
+                    "Development fixture: adverse structural "
+                    "AI scenario."
                 ),
                 months_to_value=12,
             ),
         },
-    ],
+    ]
 }
 
 
 # ============================================================
-# FORMATTING HELPERS
+# FORMATTING
 # ============================================================
 
 def format_money(value):
@@ -302,85 +337,139 @@ def format_ratio(value):
     return f"{value:.2f}×"
 
 
+def format_datetime(value):
+    if value is None:
+        return "N/A"
+
+    return value.strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
+
+
 def gate_icon(status):
     if status == GateStatus.PASS:
         return "✅"
+
     if status == GateStatus.FAIL:
         return "❌"
+
     if status == GateStatus.DATA_INSUFFICIENT:
         return "⚠️"
+
     return "➖"
 
 
 # ============================================================
-# RUN THE SCREEN
+# RETRIEVE LIVE PRICES
 # ============================================================
 
 for stock in screen_data["candidates"]:
 
-    gate_results = {}
+    price_result = retrieve_price(
+        stock["ticker"]
+    )
 
-    gate_results[1] = evaluate_gate_1(
+    stock["price_result"] = price_result
+
+    # Never fall back silently to a remembered or
+    # previously hard-coded price.
+    stock["gate5"].current_price = (
+        price_result.price
+        if price_result.error is None
+        else None
+    )
+
+
+# ============================================================
+# RUN SEQUENTIAL GATES
+# ============================================================
+
+for stock in screen_data["candidates"]:
+
+    results = {}
+
+    # Gate 1
+
+    results[1] = evaluate_gate_1(
         stock["gate1"]
     )
 
-    if gate_results[1].status == GateStatus.PASS:
-        gate_results[2] = evaluate_gate_2(
+    # Gate 2
+
+    if results[1].status == GateStatus.PASS:
+
+        results[2] = evaluate_gate_2(
             stock["gate2"]
         )
+
     else:
-        gate_results[2] = None
+        results[2] = None
+
+    # Gate 3
 
     if (
-        gate_results[2]
-        and gate_results[2].status == GateStatus.PASS
+        results[2]
+        and results[2].status == GateStatus.PASS
     ):
-        gate_results[3] = evaluate_gate_3(
+
+        results[3] = evaluate_gate_3(
             stock["gate3"]
         )
+
     else:
-        gate_results[3] = None
+        results[3] = None
+
+    # Gate 4
 
     if (
-        gate_results[3]
-        and gate_results[3].status == GateStatus.PASS
+        results[3]
+        and results[3].status == GateStatus.PASS
     ):
-        gate_results[4] = evaluate_gate_4(
+
+        results[4] = evaluate_gate_4(
             stock["gate4"]
         )
+
     else:
-        gate_results[4] = None
+        results[4] = None
+
+    # Gate 5
 
     if (
-        gate_results[4]
-        and gate_results[4].status == GateStatus.PASS
+        results[4]
+        and results[4].status == GateStatus.PASS
     ):
-        gate_results[5] = evaluate_gate_5(
+
+        results[5] = evaluate_gate_5(
             stock["gate5"]
         )
+
     else:
-        gate_results[5] = None
+        results[5] = None
 
-    stock["gate_results"] = gate_results
+    stock["gate_results"] = results
 
-    # Build classification-compatible gate dict
-    completed_gates = {
+    completed_results = {
         gate_number: result
-        for gate_number, result in gate_results.items()
+        for gate_number, result in results.items()
         if result is not None
     }
 
     stock["status"] = classify_candidate(
-        completed_gates
+        completed_results
     )
 
     stock["failed_gate"] = first_failed_gate(
-        completed_gates
+        completed_results
     )
 
-    if gate_results[5]:
+    # ----------------------------------------
+    # Gate 5 metrics
+    # ----------------------------------------
 
-        metrics = gate_results[5].metrics
+    if results[5] is not None:
+
+        metrics = results[5].metrics
 
         stock["price"] = metrics.get(
             "current_price"
@@ -412,7 +501,10 @@ for stock in screen_data["candidates"]:
 
     else:
 
-        stock["price"] = stock["gate5"].current_price
+        stock["price"] = (
+            stock["price_result"].price
+        )
+
         stock["fair_value"] = None
         stock["downside_value"] = None
         stock["annualized_return"] = None
@@ -420,55 +512,78 @@ for stock in screen_data["candidates"]:
         stock["upside_percent"] = None
         stock["downside_percent"] = None
 
-    # Gate 5 recheck price
+    # ----------------------------------------
+    # Near-miss price
+    # ----------------------------------------
+
     stock["recheck"] = None
 
     if (
-        gate_results[5]
-        and gate_results[5].status == GateStatus.FAIL
+        results[5]
+        and results[5].status == GateStatus.FAIL
     ):
 
-        stock["recheck"] = gate_5_recheck_price(
-            fair_value=stock["gate5"].conservative_fair_value,
-            downside_value=stock["gate5"].conservative_downside,
-            months_to_value=stock["gate5"].months_to_value,
+        stock["recheck"] = (
+            gate_5_recheck_price(
+                fair_value=(
+                    stock["gate5"]
+                    .conservative_fair_value
+                ),
+                downside_value=(
+                    stock["gate5"]
+                    .conservative_downside
+                ),
+                months_to_value=(
+                    stock["gate5"]
+                    .months_to_value
+                ),
+            )
         )
 
 
 # ============================================================
-# RESULT GROUPS
+# GROUP RESULTS
 # ============================================================
 
 candidates = screen_data["candidates"]
 
 survivors = [
-    s for s in candidates
-    if s["status"] == CandidateStatus.SURVIVOR
+    stock
+    for stock in candidates
+    if stock["status"]
+    == CandidateStatus.SURVIVOR
 ]
 
 near_misses = [
-    s for s in candidates
-    if s["status"] == CandidateStatus.NEAR_MISS
+    stock
+    for stock in candidates
+    if stock["status"]
+    == CandidateStatus.NEAR_MISS
 ]
 
 failed_candidates = [
-    s for s in candidates
-    if s["status"] == CandidateStatus.FAIL
+    stock
+    for stock in candidates
+    if stock["status"]
+    == CandidateStatus.FAIL
 ]
 
 data_insufficient = [
-    s for s in candidates
-    if s["status"] == CandidateStatus.DATA_INSUFFICIENT
+    stock
+    for stock in candidates
+    if stock["status"]
+    == CandidateStatus.DATA_INSUFFICIENT
 ]
 
 
 # ============================================================
-# MOBILE STYLING
+# CSS
 # ============================================================
 
 st.markdown(
     """
     <style>
+
     .block-container {
         max-width: 720px;
         padding-top: 1rem;
@@ -485,6 +600,7 @@ st.markdown(
     }
 
     @media (max-width: 600px) {
+
         .block-container {
             padding-left: 0.8rem;
             padding-right: 0.8rem;
@@ -502,6 +618,7 @@ st.markdown(
             font-size: 1.25rem !important;
         }
     }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -509,18 +626,63 @@ st.markdown(
 
 
 # ============================================================
-# DISPLAY FUNCTIONS
+# DISPLAY HELPERS
 # ============================================================
 
-def display_gate_result(gate_number, result):
+def display_price_source(stock):
+
+    result = stock["price_result"]
+
+    if result.error:
+
+        st.error(
+            "Live price retrieval failed."
+        )
+
+        st.caption(
+            result.error
+        )
+
+        return
+
+    st.caption(
+        "Price source: "
+        f"{result.source}"
+    )
+
+    st.caption(
+        "Market timestamp: "
+        f"{format_datetime(result.market_time)}"
+    )
+
+    st.caption(
+        "Retrieved: "
+        f"{format_datetime(result.retrieved_at)}"
+    )
+
+    st.markdown(
+        f"[Open retrieved price source]"
+        f"({result.source_url})"
+    )
+
+
+def display_gate_result(
+    gate_number,
+    result,
+):
 
     if result is None:
+
         st.write(
-            f"➖ **Gate {gate_number}: NOT EVALUATED**"
+            f"➖ **Gate {gate_number}: "
+            "NOT EVALUATED**"
         )
+
         st.caption(
-            "Stopped because an earlier gate did not pass."
+            "Evaluation stopped because an earlier "
+            "gate did not pass."
         )
+
         return
 
     st.write(
@@ -529,27 +691,50 @@ def display_gate_result(gate_number, result):
         f"{result.status.value}**"
     )
 
-    st.caption(result.reason)
+    st.caption(
+        result.reason
+    )
 
 
 def display_stock(stock):
 
     with st.container(border=True):
 
-        st.subheader(stock["ticker"])
-        st.caption(stock["company"])
+        st.subheader(
+            stock["ticker"]
+        )
 
-        if stock["status"] == CandidateStatus.SURVIVOR:
+        st.caption(
+            stock["company"]
+        )
 
-            st.success("SURVIVOR — Passed all 5 gates")
+        # ----------------------------------------
+        # Status
+        # ----------------------------------------
 
-        elif stock["status"] == CandidateStatus.NEAR_MISS:
+        if (
+            stock["status"]
+            == CandidateStatus.SURVIVOR
+        ):
 
-            st.error(
-                f"Gate {stock['failed_gate']} FAIL — Near Miss"
+            st.success(
+                "SURVIVOR — Passed all 5 gates"
             )
 
-        elif stock["status"] == CandidateStatus.FAIL:
+        elif (
+            stock["status"]
+            == CandidateStatus.NEAR_MISS
+        ):
+
+            st.error(
+                f"Gate {stock['failed_gate']} "
+                "FAIL — Near Miss"
+            )
+
+        elif (
+            stock["status"]
+            == CandidateStatus.FAIL
+        ):
 
             st.error(
                 f"Gate {stock['failed_gate']} FAIL"
@@ -560,46 +745,97 @@ def display_stock(stock):
             == CandidateStatus.DATA_INSUFFICIENT
         ):
 
-            st.warning("DATA INSUFFICIENT")
+            st.warning(
+                "DATA INSUFFICIENT — retrieval attempted"
+            )
 
         else:
 
-            st.warning("NOT FULLY EVALUATED")
+            st.warning(
+                "NOT FULLY EVALUATED"
+            )
 
-        col1, col2 = st.columns(2)
-
-        col1.metric(
-            "Current Price",
-            format_money(stock["price"]),
-        )
-
-        col2.metric(
-            "Fair Value",
-            format_money(stock["fair_value"]),
-        )
-
-        col1.metric(
-            "Downside Value",
-            format_money(stock["downside_value"]),
-        )
-
-        col2.metric(
-            "Reward / Downside",
-            format_ratio(stock["reward_downside"]),
-        )
+        # ----------------------------------------
+        # Price
+        # ----------------------------------------
 
         st.metric(
-            "Annualized Base Return",
-            format_percent(stock["annualized_return"]),
+            "Current Retrieved Price",
+            format_money(
+                stock["price_result"].price
+            ),
         )
+
+        display_price_source(
+            stock
+        )
+
+        # ----------------------------------------
+        # Gate 5 metrics
+        # ----------------------------------------
+
+        if stock["gate_results"][5]:
+
+            st.divider()
+
+            col1, col2 = st.columns(2)
+
+            col1.metric(
+                "Fair Value",
+                format_money(
+                    stock["fair_value"]
+                ),
+            )
+
+            col2.metric(
+                "Downside Value",
+                format_money(
+                    stock["downside_value"]
+                ),
+            )
+
+            col1.metric(
+                "Upside",
+                format_percent(
+                    stock["upside_percent"]
+                ),
+            )
+
+            col2.metric(
+                "Downside",
+                format_percent(
+                    stock["downside_percent"]
+                ),
+            )
+
+            st.metric(
+                "Reward / Downside",
+                format_ratio(
+                    stock["reward_downside"]
+                ),
+            )
+
+            st.metric(
+                "Annualized Base Return",
+                format_percent(
+                    stock["annualized_return"]
+                ),
+            )
+
+        # ----------------------------------------
+        # Full analysis
+        # ----------------------------------------
 
         with st.expander(
             f"View full {stock['ticker']} analysis"
         ):
 
-            st.markdown("### Gate Results")
+            st.markdown(
+                "### Gate Results"
+            )
 
             for gate_number in range(1, 6):
+
                 display_gate_result(
                     gate_number,
                     stock["gate_results"].get(
@@ -607,16 +843,25 @@ def display_stock(stock):
                     ),
                 )
 
+            st.markdown(
+                "### Price Integrity"
+            )
+
+            display_price_source(
+                stock
+            )
+
             if stock["gate_results"][5]:
 
-                g5 = stock["gate_results"][5]
-                metrics = g5.metrics
-
-                st.markdown("### Gate 5 Valuation")
+                st.markdown(
+                    "### Gate 5 Valuation"
+                )
 
                 st.write(
                     "**Base operating assumption:** "
-                    + stock["gate5"].base_operating_assumption
+                    + stock[
+                        "gate5"
+                    ].base_operating_assumption
                 )
 
                 st.write(
@@ -627,13 +872,22 @@ def display_stock(stock):
                 )
 
                 st.write(
-                    "**Conservative fair value:** "
+                    "**Conservative fair value used:** "
                     f"{format_money(stock['gate5'].conservative_fair_value)}"
                 )
 
                 st.write(
+                    "**Fair-value basis:** "
+                    + stock[
+                        "gate5"
+                    ].fair_value_basis
+                )
+
+                st.write(
                     "**Adverse operating assumption:** "
-                    + stock["gate5"].adverse_operating_assumption
+                    + stock[
+                        "gate5"
+                    ].adverse_operating_assumption
                 )
 
                 st.write(
@@ -644,61 +898,90 @@ def display_stock(stock):
                 )
 
                 st.write(
-                    "**Conservative downside:** "
+                    "**Conservative downside used:** "
                     f"{format_money(stock['gate5'].conservative_downside)}"
                 )
 
                 st.write(
+                    "**Downside basis:** "
+                    + stock[
+                        "gate5"
+                    ].downside_basis
+                )
+
+                st.write(
                     "**Upside:** "
-                    f"{format_percent(metrics.get('upside_percent'))}"
+                    f"{format_percent(stock['upside_percent'])}"
                 )
 
                 st.write(
                     "**Downside:** "
-                    f"{format_percent(metrics.get('downside_percent'))}"
+                    f"{format_percent(stock['downside_percent'])}"
                 )
 
                 st.write(
                     "**Reward / downside:** "
-                    f"{format_ratio(metrics.get('reward_downside'))}"
+                    f"{format_ratio(stock['reward_downside'])}"
                 )
 
                 st.write(
                     "**Annualized base return:** "
-                    f"{format_percent(metrics.get('annualized_return'))}"
+                    f"{format_percent(stock['annualized_return'])}"
                 )
 
-                if stock["recheck"]:
+            if stock["recheck"]:
 
-                    st.markdown("### Near-Miss Recheck")
+                st.markdown(
+                    "### Near-Miss Recheck"
+                )
 
-                    st.write(
-                        "Approximate maximum share price "
-                        "that would satisfy both existing "
-                        "Gate 5 hurdles:"
-                    )
+                st.write(
+                    "Maximum approximate share price "
+                    "that would satisfy both existing "
+                    "Gate 5 hurdles without changing "
+                    "fair-value or downside assumptions:"
+                )
 
-                    st.metric(
-                        "Recheck Price",
-                        format_money(
-                            stock["recheck"]["qualifying_price"]
-                        ),
-                    )
+                st.metric(
+                    "Recheck Price",
+                    format_money(
+                        stock["recheck"][
+                            "qualifying_price"
+                        ]
+                    ),
+                )
 
-                    st.caption(
-                        "This does not change fair-value or downside "
-                        "assumptions."
-                    )
+                st.caption(
+                    "Binding hurdle: "
+                    + stock["recheck"][
+                        "binding_constraint"
+                    ]
+                )
 
 
 # ============================================================
 # HEADER
 # ============================================================
 
-st.title("Contrarian Value Screen")
+st.title(
+    "Contrarian Value Screen"
+)
 
 st.caption(
     "v6.3.1 — 6–18 month value + catalyst screen"
+)
+
+
+# ============================================================
+# DEVELOPMENT WARNING
+# ============================================================
+
+st.warning(
+    "LIVE PRICE TEST: current prices are now retrieved "
+    "from Yahoo Finance. Candidate selection, Gate 1–4 "
+    "evidence, fair values, and downside assumptions "
+    "remain development fixtures and are NOT current "
+    "investment conclusions."
 )
 
 
@@ -725,29 +1008,17 @@ col3.metric(
 
 
 # ============================================================
-# DEVELOPMENT WARNING
-# ============================================================
-
-st.warning(
-    "Development version: the gate engine is now based on "
-    "v6.3.1, but the candidate evidence and valuation inputs "
-    "below are still sample data."
-)
-
-
-# ============================================================
-# RUN BUTTON
+# REFRESH BUTTON
 # ============================================================
 
 if st.button(
-    "Run New Screen",
+    "Refresh Live Prices",
     use_container_width=True,
 ):
 
-    st.info(
-        "The live candidate-discovery and data-retrieval "
-        "workflow will be connected next."
-    )
+    retrieve_price.clear()
+
+    st.rerun()
 
 
 # ============================================================
@@ -755,17 +1026,20 @@ if st.button(
 # ============================================================
 
 st.divider()
-st.header("Initial Candidate List")
+
+st.header(
+    "Initial Candidate List"
+)
 
 for stock in candidates:
 
     st.write(
-        f"**{stock['ticker']} — {stock['company']}**"
+        f"**{stock['ticker']} — "
+        f"{stock['company']}**"
     )
 
     st.caption(
-        "Development candidate used to test the "
-        "screening workflow."
+        stock["entry_reason"]
     )
 
 
@@ -774,11 +1048,16 @@ for stock in candidates:
 # ============================================================
 
 st.divider()
-st.header("Data-Insufficient Candidates")
+
+st.header(
+    "Data-Insufficient Candidates"
+)
 
 if not data_insufficient:
 
-    st.write("None.")
+    st.write(
+        "None."
+    )
 
 else:
 
@@ -791,11 +1070,16 @@ else:
 # ============================================================
 
 st.divider()
-st.header("Eliminations")
+
+st.header(
+    "Eliminations"
+)
 
 if not failed_candidates:
 
-    st.write("No Gate 1–4 eliminations.")
+    st.write(
+        "No Gate 1–4 eliminations."
+    )
 
 else:
 
@@ -808,11 +1092,16 @@ else:
 # ============================================================
 
 st.divider()
-st.header("Survivors")
+
+st.header(
+    "Survivors"
+)
 
 if not survivors:
 
-    st.info("No candidates passed all five gates.")
+    st.info(
+        "No candidates passed all five gates."
+    )
 
 else:
 
@@ -825,11 +1114,16 @@ else:
 # ============================================================
 
 st.divider()
-st.header("Near-Miss Recheck List")
+
+st.header(
+    "Near-Miss Recheck List"
+)
 
 if not near_misses:
 
-    st.write("None.")
+    st.write(
+        "None."
+    )
 
 else:
 
@@ -838,40 +1132,51 @@ else:
 
 
 # ============================================================
-# RANKING
+# SURVIVOR RANKING
 # ============================================================
 
 st.divider()
-st.header("Survivor Ranking")
+
+st.header(
+    "Survivor Ranking"
+)
 
 if not survivors:
 
-    st.write("There is no survivor ranking.")
+    st.write(
+        "There is no survivor ranking."
+    )
 
 else:
 
     st.write(
-        "Survivor ranking logic will be added after "
-        "live evidence retrieval is connected."
+        "Ranking will be activated once the live "
+        "research layer is connected."
     )
 
 
 # ============================================================
-# FINAL DISCIPLINE CHECK
+# DISCIPLINE CHECK
 # ============================================================
 
 st.divider()
-st.header("Discipline Check")
+
+st.header(
+    "Discipline Check"
+)
 
 if not survivors:
 
-    st.write("There is no #1 survivor.")
+    st.write(
+        "There is no #1 survivor."
+    )
 
 else:
 
     st.write(
-        "Final recommendation discipline check will be "
-        "performed after live-data screening is connected."
+        "The final independent recommendation check "
+        "will be performed once live evidence retrieval "
+        "is connected."
     )
 
 
@@ -882,9 +1187,6 @@ else:
 st.divider()
 
 st.caption(
-    f"Screen date: {screen_data['run_date']}"
-)
-
-st.caption(
-    "Development build — sample candidate evidence only."
+    "Development build — v6.3.1 engine with "
+    "live market-price retrieval."
 )
