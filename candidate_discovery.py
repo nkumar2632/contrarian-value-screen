@@ -1,9 +1,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+import io
 
-import numpy as np
 import pandas as pd
+import requests
 import yfinance as yf
 
 
@@ -15,7 +16,6 @@ import yfinance as yf
 class DiscoveredCandidate:
     ticker: str
     company: str
-
     entry_reason: str
 
     last_price: Optional[float]
@@ -29,19 +29,16 @@ class DiscoveredCandidate:
     distance_from_52w_low: Optional[float]
 
     volume_ratio: Optional[float]
-
     discovery_score: Optional[float]
 
     discovery_source: str
     retrieved_at: datetime
 
-    signals: list = field(
-        default_factory=list
-    )
+    signals: list = field(default_factory=list)
 
 
 # ============================================================
-# MAJOR ETF UNIVERSE
+# MAJOR UNLEVERAGED ETF UNIVERSE
 # ============================================================
 
 MAJOR_ETFS = {
@@ -64,16 +61,18 @@ MAJOR_ETFS = {
 
 
 # ============================================================
-# LARGE-CAP STOCK UNIVERSE
+# S&P 500 UNIVERSE
 # ============================================================
 
 def get_sp500_universe():
     """
     Retrieve the current S&P 500 constituent list.
 
-    This is a reproducible large-cap discovery universe.
+    Important:
+    requests retrieves the page.
+    pandas only parses the already-downloaded HTML.
 
-    It is NOT represented as the entire U.S. market.
+    This avoids pandas/urllib making the HTTP request itself.
     """
 
     url = (
@@ -81,9 +80,49 @@ def get_sp500_universe():
         "List_of_S%26P_500_companies"
     )
 
-    tables = pd.read_html(url)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 "
+            "(Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        )
+    }
+
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=20,
+    )
+
+    response.raise_for_status()
+
+    html_text = response.text
+
+    tables = pd.read_html(
+        io.StringIO(html_text)
+    )
+
+    if not tables:
+        raise RuntimeError(
+            "No tables found on the S&P 500 source page."
+        )
 
     table = tables[0]
+
+    required_columns = {
+        "Symbol",
+        "Security",
+    }
+
+    if not required_columns.issubset(
+        set(table.columns)
+    ):
+        raise RuntimeError(
+            "The S&P 500 table does not contain "
+            "the expected Symbol and Security columns."
+        )
 
     universe = {}
 
@@ -97,48 +136,60 @@ def get_sp500_universe():
             row["Security"]
         ).strip()
 
-        # Yahoo Finance uses '-' instead of '.'
         ticker = ticker.replace(
             ".",
             "-",
         )
 
+        if ticker:
+            universe[ticker] = company
+
+    if not universe:
+        raise RuntimeError(
+            "The S&P 500 universe was empty after parsing."
+        )
+
+    return universe
+
+
+# ============================================================
+# BUILD DISCOVERY UNIVERSE
+# ============================================================
+
+def build_discovery_universe():
+    """
+    Build the discovery universe before any investment
+    gate is evaluated.
+    """
+
+    universe = get_sp500_universe()
+
+    for ticker, company in MAJOR_ETFS.items():
         universe[ticker] = company
 
     return universe
 
 
 # ============================================================
-# FULL DISCOVERY UNIVERSE
+# DOWNLOAD MARKET HISTORY
 # ============================================================
 
-def build_discovery_universe():
-
-    universe = get_sp500_universe()
-
-    for ticker, name in MAJOR_ETFS.items():
-        universe[ticker] = name
-
-    return universe
-
-
-# ============================================================
-# DOWNLOAD PRICE HISTORY
-# ============================================================
-
-def download_history(
-    tickers,
-):
+def download_history(tickers):
     """
-    Download approximately one year of daily price and
-    volume history.
+    Download approximately one year of daily market history.
 
-    auto_adjust=False keeps directly reported historical
-    OHLC data available.
+    This data is used only for candidate discovery signals.
     """
+
+    ticker_list = list(tickers)
+
+    if not ticker_list:
+        raise RuntimeError(
+            "No tickers were supplied for discovery."
+        )
 
     data = yf.download(
-        tickers=list(tickers),
+        tickers=ticker_list,
         period="1y",
         interval="1d",
         group_by="column",
@@ -147,17 +198,20 @@ def download_history(
         threads=True,
     )
 
+    if data is None or data.empty:
+        raise RuntimeError(
+            "No market history was returned for discovery."
+        )
+
     return data
 
 
 # ============================================================
-# SAFE VALUE HELPERS
+# SAFE HELPERS
 # ============================================================
 
 def safe_float(value):
-
     try:
-
         if pd.isna(value):
             return None
 
@@ -167,11 +221,7 @@ def safe_float(value):
         return None
 
 
-def pct_change(
-    current,
-    prior,
-):
-
+def pct_change(current, prior):
     if (
         current is None
         or prior is None
@@ -185,23 +235,62 @@ def pct_change(
 
 
 # ============================================================
-# PER-TICKER METRICS
+# EXTRACT ONE SERIES
+# ============================================================
+
+def get_ticker_series(
+    data,
+    field,
+    ticker,
+):
+    """
+    Safely extract a single field for a single ticker
+    from a multi-ticker yfinance download.
+    """
+
+    try:
+        field_data = data[field]
+
+        if isinstance(
+            field_data,
+            pd.Series,
+        ):
+            return field_data.dropna()
+
+        if ticker not in field_data.columns:
+            return pd.Series(
+                dtype=float
+            )
+
+        return field_data[
+            ticker
+        ].dropna()
+
+    except Exception:
+        return pd.Series(
+            dtype=float
+        )
+
+
+# ============================================================
+# CALCULATE METRICS
 # ============================================================
 
 def calculate_metrics(
     ticker,
     data,
 ):
+    close = get_ticker_series(
+        data,
+        "Close",
+        ticker,
+    )
 
-    try:
-
-        close = data["Close"][ticker].dropna()
-
-        volume = data["Volume"][ticker].dropna()
-
-    except Exception:
-
-        return None
+    volume = get_ticker_series(
+        data,
+        "Volume",
+        ticker,
+    )
 
     if len(close) < 30:
         return None
@@ -213,46 +302,42 @@ def calculate_metrics(
     if current_price is None:
         return None
 
-    # --------------------------------------------------------
-    # RETURNS
-    # --------------------------------------------------------
-
     return_1d = None
     return_1m = None
     return_3m = None
     return_6m = None
 
     if len(close) >= 2:
-
         return_1d = pct_change(
             current_price,
-            safe_float(close.iloc[-2]),
+            safe_float(
+                close.iloc[-2]
+            ),
         )
 
     if len(close) >= 22:
-
         return_1m = pct_change(
             current_price,
-            safe_float(close.iloc[-22]),
+            safe_float(
+                close.iloc[-22]
+            ),
         )
 
     if len(close) >= 64:
-
         return_3m = pct_change(
             current_price,
-            safe_float(close.iloc[-64]),
+            safe_float(
+                close.iloc[-64]
+            ),
         )
 
     if len(close) >= 127:
-
         return_6m = pct_change(
             current_price,
-            safe_float(close.iloc[-127]),
+            safe_float(
+                close.iloc[-127]
+            ),
         )
-
-    # --------------------------------------------------------
-    # 52-WEEK RANGE
-    # --------------------------------------------------------
 
     high_52w = safe_float(
         close.max()
@@ -269,7 +354,6 @@ def calculate_metrics(
         high_52w is not None
         and high_52w > 0
     ):
-
         drawdown_from_high = (
             current_price / high_52w
         ) - 1
@@ -278,19 +362,13 @@ def calculate_metrics(
         low_52w is not None
         and low_52w > 0
     ):
-
         distance_from_low = (
             current_price / low_52w
         ) - 1
 
-    # --------------------------------------------------------
-    # VOLUME
-    # --------------------------------------------------------
-
     volume_ratio = None
 
     if len(volume) >= 21:
-
         current_volume = safe_float(
             volume.iloc[-1]
         )
@@ -304,7 +382,6 @@ def calculate_metrics(
             and average_volume is not None
             and average_volume > 0
         ):
-
             volume_ratio = (
                 current_volume
                 / average_volume
@@ -338,12 +415,16 @@ def calculate_metrics(
 
 
 # ============================================================
-# DISCOVERY SIGNALS
+# BUILD DISCOVERY SIGNALS
 # ============================================================
 
-def build_signals(
-    metrics,
-):
+def build_signals(metrics):
+    """
+    These signals explain why a security entered the
+    candidate pool.
+
+    They are not valuation evidence and cannot pass Gate 1.
+    """
 
     signals = []
 
@@ -375,15 +456,10 @@ def build_signals(
         "volume_ratio"
     )
 
-    # --------------------------------------------------------
-    # PRICE DISLOCATION SIGNALS
-    # --------------------------------------------------------
-
     if (
         r1d is not None
         and r1d <= -0.05
     ):
-
         signals.append(
             f"1-day decline {r1d:.1%}"
         )
@@ -392,7 +468,6 @@ def build_signals(
         r1m is not None
         and r1m <= -0.10
     ):
-
         signals.append(
             f"1-month decline {r1m:.1%}"
         )
@@ -401,7 +476,6 @@ def build_signals(
         r3m is not None
         and r3m <= -0.15
     ):
-
         signals.append(
             f"3-month decline {r3m:.1%}"
         )
@@ -410,7 +484,6 @@ def build_signals(
         r6m is not None
         and r6m <= -0.20
     ):
-
         signals.append(
             f"6-month decline {r6m:.1%}"
         )
@@ -419,7 +492,6 @@ def build_signals(
         drawdown is not None
         and drawdown <= -0.25
     ):
-
         signals.append(
             f"{abs(drawdown):.1%} below 52-week high"
         )
@@ -428,7 +500,6 @@ def build_signals(
         low_distance is not None
         and low_distance <= 0.10
     ):
-
         signals.append(
             f"within {low_distance:.1%} of 52-week low"
         )
@@ -437,7 +508,6 @@ def build_signals(
         volume_ratio is not None
         and volume_ratio >= 1.75
     ):
-
         signals.append(
             f"volume {volume_ratio:.1f}× recent average"
         )
@@ -453,14 +523,9 @@ def calculate_discovery_score(
     metrics,
 ):
     """
-    Score current market dislocation.
+    Higher score means a larger observable market dislocation.
 
-    Higher score = larger observable dislocation.
-
-    This score is ONLY for candidate discovery.
-
-    It is NOT evidence that a security is undervalued,
-    mispriced, or investable.
+    This is only a candidate-ranking mechanism.
     """
 
     score = 0.0
@@ -494,82 +559,66 @@ def calculate_discovery_score(
     )
 
     if r1d is not None:
-
         score += (
             max(
                 0,
                 -r1d,
             )
-            * 100
-            * 1.5
+            * 150
         )
 
     if r1m is not None:
-
         score += (
             max(
                 0,
                 -r1m,
             )
-            * 100
-            * 1.25
+            * 125
         )
 
     if r3m is not None:
-
         score += (
             max(
                 0,
                 -r3m,
             )
             * 100
-            * 1.0
         )
 
     if r6m is not None:
-
         score += (
             max(
                 0,
                 -r6m,
             )
-            * 100
-            * 0.75
+            * 75
         )
 
     if drawdown is not None:
-
         score += (
             max(
                 0,
                 -drawdown,
             )
-            * 100
-            * 0.75
+            * 75
         )
 
     if (
         low_distance is not None
         and low_distance >= 0
     ):
-
-        # Extra weight when price is close to
-        # its 52-week low.
-
         score += (
             max(
                 0,
                 0.20 - low_distance,
             )
-            * 100
-            * 0.5
+            * 50
         )
 
     if (
         volume_ratio is not None
         and volume_ratio > 1
     ):
-
         score += (
             min(
                 volume_ratio - 1,
@@ -578,7 +627,9 @@ def calculate_discovery_score(
             * 2
         )
 
-    return score
+    return float(
+        score
+    )
 
 
 # ============================================================
@@ -588,12 +639,10 @@ def calculate_discovery_score(
 def build_entry_reason(
     signals,
 ):
-
     if not signals:
-
         return (
-            "Current price behavior showed an elevated "
-            "dislocation score relative to the discovery universe."
+            "Entered because current market data showed "
+            "an elevated dislocation score."
         )
 
     strongest = signals[:3]
@@ -601,7 +650,9 @@ def build_entry_reason(
     return (
         "Entered the screen because of current market "
         "dislocation: "
-        + "; ".join(strongest)
+        + "; ".join(
+            strongest
+        )
         + "."
     )
 
@@ -614,21 +665,19 @@ def discover_candidates(
     target_count=12,
 ):
     """
-    Discover candidates BEFORE any investment gates run.
+    Discover candidates before any investment gate runs.
 
-    The returned list is the frozen candidate list.
+    The returned candidate list is frozen.
 
-    No replacement securities should be added later
-    because other candidates fail gates.
+    No replacement candidates should be added after later
+    gate failures.
     """
 
     retrieved_at = datetime.now(
         timezone.utc
     )
 
-    universe = (
-        build_discovery_universe()
-    )
+    universe = build_discovery_universe()
 
     tickers = list(
         universe.keys()
@@ -654,15 +703,14 @@ def discover_candidates(
             metrics
         )
 
-        score = calculate_discovery_score(
-            metrics
-        )
-
-        # Require at least one meaningful
-        # observable dislocation signal.
-
         if not signals:
             continue
+
+        discovery_score = (
+            calculate_discovery_score(
+                metrics
+            )
+        )
 
         candidate = DiscoveredCandidate(
             ticker=ticker,
@@ -713,14 +761,19 @@ def discover_candidates(
                 "volume_ratio"
             ],
 
-            discovery_score=score,
+            discovery_score=(
+                discovery_score
+            ),
 
             discovery_source=(
                 "Yahoo Finance daily market data; "
-                "S&P 500 constituent universe from Wikipedia"
+                "S&P 500 constituent list retrieved "
+                "with requests and parsed locally"
             ),
 
-            retrieved_at=retrieved_at,
+            retrieved_at=(
+                retrieved_at
+            ),
 
             signals=signals,
         )
@@ -729,26 +782,18 @@ def discover_candidates(
             candidate
         )
 
-    # --------------------------------------------------------
-    # RANK BEFORE GATING
-    # --------------------------------------------------------
-
     candidates.sort(
-        key=lambda x: (
-            x.discovery_score
-            if x.discovery_score
+        key=lambda candidate: (
+            candidate.discovery_score
+            if candidate.discovery_score
             is not None
             else -999
         ),
         reverse=True,
     )
 
-    # --------------------------------------------------------
-    # FREEZE LIST
-    # --------------------------------------------------------
+    frozen_candidates = (
+        candidates[:target_count]
+    )
 
-    frozen = candidates[
-        :target_count
-    ]
-
-    return frozen
+    return frozen_candidates
