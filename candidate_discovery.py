@@ -1,13 +1,23 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
+import time
 
 import pandas as pd
 import requests
-import yfinance as yf
 
 from eligibility import evaluate_eligibility
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+YAHOO_TIMEOUT_SECONDS = 15
+YAHOO_RETRIES = 3
+MAX_WORKERS = 8
 
 
 # ============================================================
@@ -66,6 +76,19 @@ class EligibilityAuditItem:
     eligibility_retrieved_at: datetime
 
 
+@dataclass
+class HistoryResult:
+    ticker: str
+
+    close: list
+    volume: list
+
+    retrieved_at: datetime
+    source: str
+
+    error: Optional[str] = None
+
+
 # ============================================================
 # MAJOR UNLEVERAGED ETF UNIVERSE
 # ============================================================
@@ -90,28 +113,44 @@ MAJOR_ETFS = {
 
 
 # ============================================================
+# HTTP HEADERS
+# ============================================================
+
+HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/120.0 Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,*/*;q=0.8"
+    ),
+}
+
+
+# ============================================================
 # S&P 500 UNIVERSE
 # ============================================================
 
 def get_sp500_universe():
+    """
+    Retrieve the current S&P 500 constituent list.
+
+    requests performs the HTTP retrieval.
+    pandas parses only the already-downloaded HTML.
+    """
+
     url = (
         "https://en.wikipedia.org/wiki/"
         "List_of_S%26P_500_companies"
     )
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        )
-    }
-
     response = requests.get(
         url,
-        headers=headers,
+        headers=HTTP_HEADERS,
         timeout=20,
     )
 
@@ -125,7 +164,7 @@ def get_sp500_universe():
 
     if not tables:
         raise RuntimeError(
-            "No tables found on the S&P 500 source page."
+            "No S&P 500 tables were returned."
         )
 
     table = tables[0]
@@ -135,7 +174,8 @@ def get_sp500_universe():
         or "Security" not in table.columns
     ):
         raise RuntimeError(
-            "Expected S&P 500 columns were not found."
+            "Expected Symbol and Security columns "
+            "were not found in the S&P 500 table."
         )
 
     universe = {}
@@ -150,6 +190,7 @@ def get_sp500_universe():
             row["Security"]
         ).strip()
 
+        # Yahoo format for BRK.B etc.
         ticker = ticker.replace(
             ".",
             "-",
@@ -160,14 +201,14 @@ def get_sp500_universe():
 
     if not universe:
         raise RuntimeError(
-            "The S&P 500 universe was empty."
+            "S&P 500 universe was empty after parsing."
         )
 
     return universe
 
 
 # ============================================================
-# BUILD DISCOVERY UNIVERSE
+# COMPLETE DISCOVERY UNIVERSE
 # ============================================================
 
 def build_discovery_universe():
@@ -181,10 +222,218 @@ def build_discovery_universe():
 
 
 # ============================================================
-# MARKET HISTORY
+# SAFE NUMBER
 # ============================================================
 
-def download_history(tickers):
+def safe_float(value):
+
+    try:
+
+        if value is None:
+            return None
+
+        value = float(
+            value
+        )
+
+        if pd.isna(
+            value
+        ):
+            return None
+
+        return value
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# DIRECT YAHOO HISTORY RETRIEVAL
+# ============================================================
+
+def get_yahoo_history(
+    ticker,
+):
+    """
+    Retrieve approximately one year of daily history directly
+    from Yahoo's chart endpoint.
+
+    No yfinance bulk download is used.
+
+    Each ticker is independently retrieved so one malformed
+    ticker cannot corrupt the entire universe download.
+    """
+
+    ticker = ticker.upper().strip()
+
+    url = (
+        "https://query1.finance.yahoo.com/"
+        "v8/finance/chart/"
+        f"{ticker}"
+        "?range=1y"
+        "&interval=1d"
+        "&includePrePost=false"
+        "&events=div%2Csplits"
+    )
+
+    last_error = None
+
+    for attempt in range(
+        1,
+        YAHOO_RETRIES + 1,
+    ):
+
+        retrieved_at = datetime.now(
+            timezone.utc
+        )
+
+        try:
+
+            response = requests.get(
+                url,
+                headers=HTTP_HEADERS,
+                timeout=YAHOO_TIMEOUT_SECONDS,
+            )
+
+            response.raise_for_status()
+
+            payload = response.json()
+
+            chart = payload.get(
+                "chart",
+                {}
+            )
+
+            chart_error = chart.get(
+                "error"
+            )
+
+            if chart_error:
+                raise RuntimeError(
+                    str(chart_error)
+                )
+
+            results = chart.get(
+                "result"
+            )
+
+            if not results:
+                raise RuntimeError(
+                    "Yahoo returned no chart result."
+                )
+
+            result = results[0]
+
+            indicators = result.get(
+                "indicators",
+                {}
+            )
+
+            quotes = indicators.get(
+                "quote"
+            )
+
+            if not quotes:
+                raise RuntimeError(
+                    "Yahoo returned no quote history."
+                )
+
+            quote = quotes[0]
+
+            close_values = quote.get(
+                "close",
+                []
+            )
+
+            volume_values = quote.get(
+                "volume",
+                []
+            )
+
+            if not close_values:
+                raise RuntimeError(
+                    "Yahoo returned no closing-price history."
+                )
+
+            close = []
+
+            volume = []
+
+            for value in close_values:
+
+                number = safe_float(
+                    value
+                )
+
+                if number is not None:
+                    close.append(
+                        number
+                    )
+
+            for value in volume_values:
+
+                number = safe_float(
+                    value
+                )
+
+                if number is not None:
+                    volume.append(
+                        number
+                    )
+
+            if len(close) < 30:
+                raise RuntimeError(
+                    "Fewer than 30 usable daily closes "
+                    "were returned."
+                )
+
+            return HistoryResult(
+                ticker=ticker,
+                close=close,
+                volume=volume,
+                retrieved_at=retrieved_at,
+                source="Yahoo Finance chart API",
+                error=None,
+            )
+
+        except Exception as exc:
+
+            last_error = str(
+                exc
+            )
+
+            if attempt < YAHOO_RETRIES:
+
+                time.sleep(
+                    0.4 * attempt
+                )
+
+    return HistoryResult(
+        ticker=ticker,
+        close=[],
+        volume=[],
+        retrieved_at=datetime.now(
+            timezone.utc
+        ),
+        source="Yahoo Finance chart API",
+        error=last_error,
+    )
+
+
+# ============================================================
+# RETRIEVE COMPLETE UNIVERSE HISTORY
+# ============================================================
+
+def download_history(
+    tickers,
+):
+    """
+    Retrieve each ticker independently.
+
+    Uses moderate parallelism to avoid the unreliable
+    yfinance multi-ticker bulk download while keeping
+    runtime reasonable.
+    """
 
     ticker_list = list(
         tickers
@@ -195,43 +444,55 @@ def download_history(tickers):
             "No tickers supplied for discovery."
         )
 
-    data = yf.download(
-        tickers=ticker_list,
-        period="1y",
-        interval="1d",
-        group_by="column",
-        auto_adjust=False,
-        progress=False,
-        threads=True,
-    )
+    results = {}
 
-    if (
-        data is None
-        or data.empty
-    ):
-        raise RuntimeError(
-            "No market history returned."
-        )
+    with ThreadPoolExecutor(
+        max_workers=MAX_WORKERS
+    ) as executor:
 
-    return data
+        future_map = {
+            executor.submit(
+                get_yahoo_history,
+                ticker,
+            ): ticker
+            for ticker in ticker_list
+        }
+
+        for future in as_completed(
+            future_map
+        ):
+
+            ticker = future_map[
+                future
+            ]
+
+            try:
+
+                result = future.result()
+
+            except Exception as exc:
+
+                result = HistoryResult(
+                    ticker=ticker,
+                    close=[],
+                    volume=[],
+                    retrieved_at=datetime.now(
+                        timezone.utc
+                    ),
+                    source="Yahoo Finance chart API",
+                    error=str(exc),
+                )
+
+            results[
+                ticker
+            ] = result
+
+    return results
 
 
 # ============================================================
-# SAFE HELPERS
+# PERCENT CHANGE
 # ============================================================
-
-def safe_float(value):
-
-    try:
-
-        if pd.isna(value):
-            return None
-
-        return float(value)
-
-    except Exception:
-        return None
-
 
 def pct_change(
     current,
@@ -251,69 +512,31 @@ def pct_change(
 
 
 # ============================================================
-# EXTRACT TICKER SERIES
-# ============================================================
-
-def get_ticker_series(
-    data,
-    field,
-    ticker,
-):
-
-    try:
-
-        field_data = data[
-            field
-        ]
-
-        if isinstance(
-            field_data,
-            pd.Series,
-        ):
-            return field_data.dropna()
-
-        if ticker not in field_data.columns:
-            return pd.Series(
-                dtype=float
-            )
-
-        return field_data[
-            ticker
-        ].dropna()
-
-    except Exception:
-
-        return pd.Series(
-            dtype=float
-        )
-
-
-# ============================================================
 # METRIC CALCULATION
 # ============================================================
 
 def calculate_metrics(
-    ticker,
-    data,
+    history_result,
 ):
+    """
+    Calculate discovery metrics from one independently
+    retrieved ticker history.
+    """
 
-    close = get_ticker_series(
-        data,
-        "Close",
-        ticker,
-    )
+    if history_result is None:
+        return None
 
-    volume = get_ticker_series(
-        data,
-        "Volume",
-        ticker,
-    )
+    if history_result.error:
+        return None
+
+    close = history_result.close
+    volume = history_result.volume
 
     if len(close) < 30:
         return None
 
     current_price = safe_float(
-        close.iloc[-1]
+        close[-1]
     )
 
     if current_price is None:
@@ -329,7 +552,7 @@ def calculate_metrics(
         return_1d = pct_change(
             current_price,
             safe_float(
-                close.iloc[-2]
+                close[-2]
             ),
         )
 
@@ -338,7 +561,7 @@ def calculate_metrics(
         return_1m = pct_change(
             current_price,
             safe_float(
-                close.iloc[-22]
+                close[-22]
             ),
         )
 
@@ -347,7 +570,7 @@ def calculate_metrics(
         return_3m = pct_change(
             current_price,
             safe_float(
-                close.iloc[-64]
+                close[-64]
             ),
         )
 
@@ -356,24 +579,21 @@ def calculate_metrics(
         return_6m = pct_change(
             current_price,
             safe_float(
-                close.iloc[-127]
+                close[-127]
             ),
         )
 
-    high_52w = safe_float(
-        close.max()
+    high_52w = max(
+        close
     )
 
-    low_52w = safe_float(
-        close.min()
+    low_52w = min(
+        close
     )
 
     drawdown_from_high = None
 
-    if (
-        high_52w is not None
-        and high_52w > 0
-    ):
+    if high_52w > 0:
 
         drawdown_from_high = (
             current_price / high_52w
@@ -381,10 +601,7 @@ def calculate_metrics(
 
     distance_from_low = None
 
-    if (
-        low_52w is not None
-        and low_52w > 0
-    ):
+    if low_52w > 0:
 
         distance_from_low = (
             current_price / low_52w
@@ -394,24 +611,34 @@ def calculate_metrics(
 
     if len(volume) >= 21:
 
+        recent_volume = volume[
+            -21:
+        ]
+
         current_volume = safe_float(
-            volume.iloc[-1]
+            recent_volume[-1]
         )
 
-        average_volume = safe_float(
-            volume.iloc[-21:-1].mean()
-        )
+        prior_volumes = recent_volume[
+            :-1
+        ]
 
-        if (
-            current_volume is not None
-            and average_volume is not None
-            and average_volume > 0
-        ):
+        if prior_volumes:
 
-            volume_ratio = (
-                current_volume
-                / average_volume
+            average_volume = (
+                sum(prior_volumes)
+                / len(prior_volumes)
             )
+
+            if (
+                current_volume is not None
+                and average_volume > 0
+            ):
+
+                volume_ratio = (
+                    current_volume
+                    / average_volume
+                )
 
     return {
         "last_price":
@@ -447,6 +674,11 @@ def calculate_metrics(
 def build_signals(
     metrics,
 ):
+    """
+    These are candidate-discovery signals only.
+
+    They do not establish valuation and cannot pass Gate 1.
+    """
 
     signals = []
 
@@ -482,6 +714,7 @@ def build_signals(
         r1d is not None
         and r1d <= -0.05
     ):
+
         signals.append(
             f"1-day decline {r1d:.1%}"
         )
@@ -490,6 +723,7 @@ def build_signals(
         r1m is not None
         and r1m <= -0.10
     ):
+
         signals.append(
             f"1-month decline {r1m:.1%}"
         )
@@ -498,6 +732,7 @@ def build_signals(
         r3m is not None
         and r3m <= -0.15
     ):
+
         signals.append(
             f"3-month decline {r3m:.1%}"
         )
@@ -506,6 +741,7 @@ def build_signals(
         r6m is not None
         and r6m <= -0.20
     ):
+
         signals.append(
             f"6-month decline {r6m:.1%}"
         )
@@ -514,6 +750,7 @@ def build_signals(
         drawdown is not None
         and drawdown <= -0.25
     ):
+
         signals.append(
             f"{abs(drawdown):.1%} below 52-week high"
         )
@@ -522,6 +759,7 @@ def build_signals(
         low_distance is not None
         and low_distance <= 0.10
     ):
+
         signals.append(
             f"within {low_distance:.1%} of 52-week low"
         )
@@ -530,6 +768,7 @@ def build_signals(
         volume_ratio is not None
         and volume_ratio >= 1.75
     ):
+
         signals.append(
             f"volume {volume_ratio:.1f}× recent average"
         )
@@ -544,6 +783,12 @@ def build_signals(
 def calculate_discovery_score(
     metrics,
 ):
+    """
+    Rank observable dislocations.
+
+    This score is not an investment score and cannot
+    pass any valuation gate.
+    """
 
     score = 0.0
 
@@ -687,31 +932,73 @@ def build_entry_reason(
 
 def build_ranked_dislocation_pool():
     """
-    Create the complete ranked pool of securities that
-    triggered at least one discovery signal.
+    Retrieve the entire universe independently and build
+    the complete ranked pool of qualifying dislocations.
     """
-
-    retrieved_at = datetime.now(
-        timezone.utc
-    )
 
     universe = build_discovery_universe()
 
-    tickers = list(
+    history_results = download_history(
         universe.keys()
     )
 
-    history = download_history(
-        tickers
+    # --------------------------------------------------------
+    # DATA-INTEGRITY CHECK
+    # --------------------------------------------------------
+
+    retrieval_failures = [
+        ticker
+        for ticker, result
+        in history_results.items()
+        if result.error
+    ]
+
+    success_count = (
+        len(history_results)
+        - len(retrieval_failures)
     )
+
+    if success_count == 0:
+
+        raise RuntimeError(
+            "Yahoo history retrieval failed for the "
+            "entire discovery universe."
+        )
+
+    failure_rate = (
+        len(retrieval_failures)
+        / len(history_results)
+    )
+
+    # Do not silently pretend a badly incomplete universe
+    # was successfully screened.
+    if failure_rate > 0.10:
+
+        sample = ", ".join(
+            retrieval_failures[:15]
+        )
+
+        raise RuntimeError(
+            "Discovery data retrieval was materially "
+            "incomplete. "
+            f"{len(retrieval_failures)} of "
+            f"{len(history_results)} symbols failed. "
+            f"Examples: {sample}"
+        )
 
     pool = []
 
-    for ticker in tickers:
+    for ticker, company in universe.items():
+
+        history_result = history_results.get(
+            ticker
+        )
+
+        if history_result is None:
+            continue
 
         metrics = calculate_metrics(
-            ticker,
-            history,
+            history_result
         )
 
         if metrics is None:
@@ -734,7 +1021,7 @@ def build_ranked_dislocation_pool():
                     ticker,
 
                 "company":
-                    universe[ticker],
+                    company,
 
                 "metrics":
                     metrics,
@@ -746,12 +1033,18 @@ def build_ranked_dislocation_pool():
                     score,
 
                 "retrieved_at":
-                    retrieved_at,
+                    history_result.retrieved_at,
+
+                "history_source":
+                    history_result.source,
             }
         )
 
     pool.sort(
-        key=lambda item: item["score"],
+        key=lambda item: (
+            item["score"],
+            item["ticker"],
+        ),
         reverse=True,
     )
 
@@ -768,15 +1061,16 @@ def discover_candidates(
     """
     v6.3.1 discovery sequence:
 
-    1. Build the complete ranked dislocation pool.
-    2. Evaluate eligibility for every security in the pool.
-    3. Record every eligibility decision.
-    4. Freeze only the first target_count eligible securities.
-    5. Continue auditing after the frozen list is full.
+    1. Retrieve current S&P 500 + major ETF history.
+    2. Calculate current market-dislocation signals.
+    3. Rank the complete qualifying dislocation pool.
+    4. Evaluate eligibility for every ranked candidate.
+    5. Record every eligibility result.
+    6. Freeze only the first target_count eligible names.
+    7. Continue the audit after the frozen list is full.
 
-    Returns:
-        frozen_candidates
-        eligibility_audit
+    Investment gating begins only after this function
+    returns the frozen list.
     """
 
     ranked_pool = (
@@ -937,7 +1231,7 @@ def discover_candidates(
                 ),
 
                 discovery_source=(
-                    "Yahoo Finance daily market data; "
+                    f"{item['history_source']}; "
                     "S&P 500 constituent list retrieved "
                     "with requests and parsed locally; "
                     "eligibility evaluated before final "
