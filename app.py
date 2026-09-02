@@ -21,13 +21,17 @@ st.set_page_config(
 # ============================================================
 
 @st.cache_data(ttl=1800)
-def get_discovery_result():
+def get_discovery_result_v2():
     """
     Discover, eligibility-screen, audit, and freeze candidates.
 
     Cached for 30 minutes so routine Streamlit reruns
     do not silently change the frozen list.
+
+    v2 is intentionally used to invalidate older cached
+    candidate objects after the discovery schema changed.
     """
+
     return discover_candidates(
         target_count=12
     )
@@ -195,7 +199,7 @@ with st.spinner(
     (
         candidates,
         eligibility_audit,
-    ) = get_discovery_result()
+    ) = get_discovery_result_v2()
 
 
 # ============================================================
@@ -229,7 +233,7 @@ if st.button(
     use_container_width=True,
 ):
 
-    get_discovery_result.clear()
+    get_discovery_result_v2.clear()
     retrieve_price.clear()
 
     st.rerun()
@@ -261,8 +265,9 @@ st.header(
 
 st.caption(
     "Candidates are shown in original dislocation-score order. "
-    "Every security examined before the 12-name list was "
-    "completed appears here."
+    "Every security in the ranked discovery pool is audited, "
+    "including names examined after the 12-name frozen list "
+    "has already been filled."
 )
 
 
@@ -272,9 +277,9 @@ accepted_count = sum(
     if item.eligible
 )
 
-rejected_count = (
+not_included_count = (
     len(eligibility_audit)
-    - accepted_count
+    - len(candidates)
 )
 
 
@@ -293,8 +298,8 @@ audit_col2.metric(
 )
 
 audit_col3.metric(
-    "Not Included",
-    rejected_count,
+    "Not Frozen",
+    not_included_count,
 )
 
 
@@ -315,9 +320,21 @@ with st.expander(
 
         if item.eligible:
 
-            st.success(
-                "ELIGIBLE — included in frozen list"
-            )
+            if any(
+                candidate.ticker == item.ticker
+                for candidate in candidates
+            ):
+
+                st.success(
+                    "ELIGIBLE — included in frozen list"
+                )
+
+            else:
+
+                st.info(
+                    "ELIGIBLE — not frozen because the "
+                    "12-name list was already full"
+                )
 
         elif (
             item.eligibility_status
@@ -411,7 +428,7 @@ if not candidates:
 else:
 
     st.caption(
-        "The following list is now frozen before investment "
+        "The following list is frozen before investment "
         "gating. No replacement candidates will be added "
         "after Gate 1 begins."
     )
